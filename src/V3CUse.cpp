@@ -54,13 +54,27 @@ class CUseVisitor final : public VNVisitorConst {
     // VISITORS
     const AstNodeModule* ownerOf(const AstCFunc* funcp) {
         // The module a function is defined in. backp() is the previous sibling or, at a
-        // list's head, the parent, so following it ends at the module; memoized, as a
-        // module's functions are long sibling lists.
-        const auto it = m_owner.find(funcp);
-        if (it != m_owner.end()) return it->second;
-        const AstNode* nodep = funcp;
-        while (nodep && !VN_IS(nodep, NodeModule)) nodep = nodep->backp();
-        return m_owner[funcp] = VN_CAST(nodep, NodeModule);
+        // list's head, the parent, so following it ends at the module. A module's functions
+        // are long sibling lists, so every function the walk passes is recorded, and a walk
+        // stops at the first function already known: all of a module's lookups together
+        // walk each sibling once.
+        std::vector<const AstCFunc*> passed;
+        const AstNodeModule* ownerp = nullptr;
+        for (const AstNode* nodep = funcp; nodep; nodep = nodep->backp()) {
+            if (const AstCFunc* const cfuncp = VN_CAST(nodep, CFunc)) {
+                const auto it = m_owner.find(cfuncp);
+                if (it != m_owner.end()) {
+                    ownerp = it->second;
+                    break;
+                }
+                passed.push_back(cfuncp);
+            } else if (const AstNodeModule* const modp = VN_CAST(nodep, NodeModule)) {
+                ownerp = modp;
+                break;
+            }
+        }
+        for (const AstCFunc* const cfuncp : passed) m_owner.emplace(cfuncp, ownerp);
+        return ownerp;
     }
     void addClassUse(const AstNode* nodep, const AstClass* classp) {
         // A class's declaration: forward for headers; its own header for the module's

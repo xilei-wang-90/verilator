@@ -276,7 +276,10 @@ class ParamProcessor final {
 
     std::map<const std::string, std::string>
         m_longMap;  // Hash of very long names to unique identity number
-    int m_longId = 0;
+    // Names moduleCalcName has given out, to the long name each stands for. Each name comes from
+    // a hash of its long name rather than a design-wide counter, so adding a specialization
+    // renames no other one (and so no other generated file).
+    std::map<const std::string, std::string> m_shortNames;
 
     // All module names that are loaded from source code
     // Generated modules by this visitor is not included
@@ -285,8 +288,6 @@ class ParamProcessor final {
     CloneMap m_originalParams;  // Map between parameters of copied parameteized classes and their
                                 // original nodes
 
-    std::map<const V3Hash, int> m_valueMap;  // Hash of node hash to param value
-    int m_nextValue = 1;  // Next value to use in m_valueMap
 
     const AstNodeModule* m_modp = nullptr;  // Current module being processed
 
@@ -449,20 +450,30 @@ class ParamProcessor final {
         // Force hash collisions -- for testing only
         // cppcheck-suppress unreadVariable
         if (VL_UNLIKELY(v3Global.opt.debugCollision())) hash = V3Hash{paramStr};
-        int num;
-        const auto pair = m_valueMap.emplace(hash, 0);
-        if (pair.second) pair.first->second = m_nextValue++;
-        num = pair.first->second;
-        return "z"s + cvtToStr(num);
+        // The hash itself names the value, not the order values were first seen in, so a
+        // parameter value elsewhere in the design can't change this one's name. Equal hashes
+        // share a name, as they shared a number before.
+        char hex[9];
+        VL_SNPRINTF(hex, sizeof(hex), "%08x", hash.value());
+        return "z"s + hex;
     }
     string moduleCalcName(const AstNodeModule* srcModp, const string& longname) {
         string newname = longname;
         if (longname.length() > 30) {
             const auto pair = m_longMap.emplace(longname, "");
             if (pair.second) {
-                newname = srcModp->name();
-                // We use all upper case above, so lower here can't conflict
-                newname += "__pi" + cvtToStr(++m_longId);
+                // We use all upper case above, so lower here can't conflict. The suffix is
+                // the shortest prefix (8 hex digits or more) of the long name's hash that no
+                // other long name has taken, so it depends only on this name, not on how
+                // many came before it.
+                VHashSha256 hash;
+                hash.insert(longname);
+                const string hashStr = hash.digestHex();
+                for (string::size_type len = 8;; ++len) {
+                    UASSERT_OBJ(len <= hashStr.size(), srcModp, "Hash collision on " << longname);
+                    newname = srcModp->name() + "__pi" + hashStr.substr(0, len);
+                    if (m_shortNames.emplace(newname, longname).second) break;
+                }
                 pair.first->second = newname;
             }
             newname = pair.first->second;
