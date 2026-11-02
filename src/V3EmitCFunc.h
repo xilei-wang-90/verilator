@@ -399,7 +399,7 @@ public:
     // VISITORS
     using EmitCConstInit::visit;
     void visit(AstCFunc* const nodep) override {
-        if (nodep->emptyBody() && !nodep->isLoose()) return;
+        if (EmitCUtil::inlineEmptyBody(nodep)) return;  // Defined in the header
         VL_RESTORER(m_useSelfForThis);
         VL_RESTORER(m_cfuncp);
         VL_RESTORER(m_instantiatesOwnProcess);

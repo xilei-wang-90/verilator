@@ -41,6 +41,35 @@ EmitCParentModule::EmitCParentModule() {
 //######################################################################
 // EmitCUtil implementation
 
+string EmitCUtil::cloneDefinition(const AstClass* classp) {
+    // A covergroup embedded by value keeps a back pointer to its enclosing object; a clone
+    // must not share it, so those members are reset in the copy
+    using EmbeddedCovergroupVar = std::pair<const AstClass*, const AstVar*>;
+    std::vector<EmbeddedCovergroupVar> embeddedCovergroupVars;
+    const auto hasEnclosingBackPointer = [](const AstClass* covergroupp) {
+        return covergroupp->exists([](const AstVar* const varp) {
+            const AstClassRefDType* const refp = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+            return refp && refp->rawPointer();
+        });
+    };
+    const_cast<AstClass*>(classp)->foreachMember([&](AstClass* const memberClassp,
+                                                     AstVar* const varp) {
+        const AstClassRefDType* const refp = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+        if (refp && refp->classp()->isCovergroup() && hasEnclosingBackPointer(refp->classp())) {
+            embeddedCovergroupVars.emplace_back(memberClassp, varp);
+        }
+    });
+    const string className = prefixNameProtect(classp);
+    string out = "VlClass* " + className + "::clone() const {\n";
+    out += className + "* const clonep = new " + className + "(*this);\n";
+    for (const EmbeddedCovergroupVar& item : embeddedCovergroupVars) {
+        out += "clonep->" + prefixNameProtect(item.first) + "::" + item.second->nameProtect()
+               + " = VlNull{};\n";
+    }
+    out += "return clonep;\n}\n";
+    return out;
+}
+
 string EmitCUtil::prefixNameProtect(const AstNode* nodep) VL_MT_STABLE {
     const string prefix = v3Global.opt.modPrefix() + "_" + VIdProtect::protect(nodep->name());
     // If all-uppercase prefix conflicts with a previous usage of the
@@ -130,6 +159,8 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
 }
 
 void EmitCBaseVisitorConst::emitCDefaultConstructor(const AstNodeModule* const modp) {
+    // A class's are declared by EmitCHeader and defaulted in its own implementation file
+    if (VN_IS(modp, Class)) return;
     puts(EmitCUtil::prefixNameProtect(modp));
     puts("() = default;\n");
 }
@@ -172,7 +203,7 @@ void EmitCBaseVisitorConst::emitCFuncDecl(const AstCFunc* funcp, const AstNodeMo
     }
     emitCFuncHeader(funcp, modp, /* withScope: */ false);
     const AstClass* const classp = VN_CAST(modp, Class);
-    if (funcp->emptyBody() && !funcp->isLoose() && !cLinkage
+    if (EmitCUtil::inlineEmptyBody(funcp) && !cLinkage
         && !(funcp->isConstructor() && classp && classp->isInterfaceClass())) {
         putns(funcp, " {}\n");
     } else {

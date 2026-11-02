@@ -51,6 +51,18 @@ public:
 
 class EmitCUtil final {
 public:
+    // Whether classp gets a polymorphic clone() (concrete: not an interface, not virtual)
+    static bool hasClone(const AstClass* classp) {
+        return !classp->isInterfaceClass() && !classp->isVirtual();
+    }
+    // Whether funcp's (empty) body is emitted inline in its header. A class's destructor
+    // never is: inline, it would instantiate its members' destructors in every file that
+    // includes the header, which needs their classes complete (see V3CUse)
+    static bool inlineEmptyBody(const AstCFunc* funcp) {
+        return funcp->emptyBody() && !funcp->isLoose() && !funcp->isDestructor();
+    }
+    // The definition of classp's clone(), for its implementation file
+    static string cloneDefinition(const AstClass* classp);
     static string voidSelfAssign(const AstNodeModule* modp) {
         const string className = prefixNameProtect(modp);
         return className + "* const __restrict vlSelf VL_ATTR_UNUSED = static_cast<" + className

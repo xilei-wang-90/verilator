@@ -44,9 +44,31 @@ class EmitCImp final : public EmitCFunc {
         puts("// See " + EmitCUtil::topClassName() + ".h for the primary calling header\n");
         puts("\n");
         puts("#include \"" + EmitCUtil::pchClassName() + ".h\"\n");
+        emitClassIncludes();
         emitSystemCSection(m_fileModp, VSystemCSectionType::IMP_HDR);
         // Need to emit new lazy declarations
         m_lazyDecls.reset();
+    }
+
+    void emitClassIncludes() {
+        // __Syms.h, through the precompiled header, has each class package's static part
+        // only; the classes this module's code uses come from their own headers
+        // (VUseType::IMP_INCLUDE), the class itself first when this is a class package
+        std::set<std::string> names;
+        const AstNodeModule* const classp = VN_IS(m_fileModp, ClassPackage)
+                                                ? VN_AS(m_fileModp, ClassPackage)->classp()
+                                                : nullptr;
+        if (classp) puts("#include \"" + EmitCUtil::prefixNameProtect(classp) + ".h\"\n");
+        for (const AstNodeModule* modp : {m_fileModp, classp}) {
+            if (!modp) continue;
+            for (const AstNode* itemp = modp->stmtsp(); itemp; itemp = itemp->nextp()) {
+                const AstCUse* const usep = VN_CAST(itemp, CUse);
+                if (usep && usep->useType().containsAny(VUseType::IMP_INCLUDE))
+                    names.insert(EmitCUtil::prefixNameProtect(usep));
+            }
+        }
+        if (classp) names.erase(EmitCUtil::prefixNameProtect(classp));
+        for (const std::string& name : names) puts("#include \"" + name + ".h\"\n");
     }
 
     void emitStaticVarDefns(const AstNodeModule* modp) {
@@ -385,6 +407,18 @@ class EmitCImp final : public EmitCFunc {
                 emitCoverageImp();
             }
             emitSavableImp(modp);
+            if (const AstClass* const classp = VN_CAST(modp, Class)) {
+                // Declared by EmitCHeader::emitInternalMethodDecls
+                const std::string className = EmitCUtil::prefixNameProtect(classp);
+                puts("\n");
+                putns(classp, className + "::" + className + "() = default;\n");
+                putns(classp, className + "::" + className + "(const " + className
+                                  + "&) = default;\n");
+                if (EmitCUtil::hasClone(classp)) {
+                    puts("\n");
+                    putns(classp, EmitCUtil::cloneDefinition(classp));
+                }
+            }
         } else {
             // From `systemc_implementation
             emitSystemCSection(modp, VSystemCSectionType::IMP);
