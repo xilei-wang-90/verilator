@@ -29,6 +29,16 @@ EmitCParentModule::EmitCParentModule() {
             if (VN_IS(nodep, CFunc) || VN_IS(nodep, Var) || VN_IS(nodep, NodeCoverDecl)) {
                 nodep->user4p(modp);
             }
+            // A new class can otherwise change whether an existing class function needs
+            // a process argument. Keep class-call signatures stable while the split is active.
+            if (AstCFunc* const funcp = VN_CAST(nodep, CFunc)) {
+                if (EmitCUtil::useLibrarySplit()
+                    && (VN_IS(modp, Class) || VN_IS(modp, ClassPackage))
+                    && funcp->isProperMethod()
+                    && !funcp->isDestructor() && funcp->name() != "_ctor_var_reset"
+                    && funcp->name() != "to_string" && funcp->name() != "to_string_middle")
+                    funcp->setNeedProcess();
+            }
         }
         modp->foreach([&](AstNodeCoverDecl* nodep) { nodep->user4p(modp); });
     };
@@ -129,8 +139,11 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
     string args;
     if (nodep->isLoose() && !nodep->isStatic()) {
         if (nodep->isConst().trueKnown()) args += "const ";
-        args += EmitCUtil::prefixNameProtect(EmitCParentModule::get(nodep));
-        args += "* vlSelf";
+        const AstNodeModule* const modp = EmitCParentModule::get(nodep);
+        const bool libraryRoot = EmitCUtil::useLibrarySplit()
+                                 && modp == v3Global.rootp()->topModulep();
+        args += EmitCUtil::topSelfClassName(modp);
+        args += libraryRoot ? "* vlSelfLib" : "* vlSelf";
     }
     if (nodep->needProcess()) {
         if (!args.empty()) args += ", ";
@@ -138,7 +151,16 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
     }
     if (!nodep->argTypes().empty()) {
         if (!args.empty()) args += ", ";
-        args += nodep->argTypes();
+        const string argTypes = nodep->argTypes();
+        if (EmitCUtil::useLibrarySplit()) {
+            // Class and task signatures use the library view so library overrides and
+            // callers need no user declarations. Definitions restore their local vlSymsp.
+            args += VString::replaceSubstr(
+                argTypes, EmitCUtil::symClassName() + "* __restrict vlSymsp",
+                EmitCUtil::librarySymClassName() + "* __restrict vlSymspLib");
+        } else {
+            args += argTypes;
+        }
     }
     // Might be a user function with argument list.
     for (const AstNode* stmtp = nodep->argsp(); stmtp; stmtp = stmtp->nextp()) {

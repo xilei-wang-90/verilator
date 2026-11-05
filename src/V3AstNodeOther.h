@@ -2205,6 +2205,7 @@ class AstVar final : public AstNode {
     bool m_isStdRandomizeArg : 1;  // Argument variable created for std::randomize (__Varg*)
     bool m_processQueue : 1;  // Process queue variable
     bool m_mtaskCacheLineAlign : 1;  // Start MTask affinity group on a cache line
+    bool m_libraryRoot : 1;  // Shared with library classes through the library root base
     void init() {
         m_ansi = false;
         m_declTyped = false;
@@ -2270,6 +2271,7 @@ class AstVar final : public AstNode {
         m_isStdRandomizeArg = false;
         m_processQueue = false;
         m_mtaskCacheLineAlign = false;
+        m_libraryRoot = false;
     }
 
 public:
@@ -2493,6 +2495,8 @@ public:
     }
     bool isIfaceParent() const { return m_isIfaceParent; }
     bool isInternal() const { return m_isInternal; }
+    bool libraryRoot() const { return m_libraryRoot; }
+    void libraryRoot(bool flag) { m_libraryRoot = flag; }
     bool isIfaceParam() const { return m_isIfaceParam; }
     bool isSignal() const { return varType().isSignal(); }
     bool isNet() const { return varType().isNet(); }

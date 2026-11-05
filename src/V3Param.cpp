@@ -462,14 +462,13 @@ class ParamProcessor final {
         if (longname.length() > 30) {
             const auto pair = m_longMap.emplace(longname, "");
             if (pair.second) {
-                // We use all upper case above, so lower here can't conflict. The suffix is
-                // the shortest prefix (8 hex digits or more) of the long name's hash that no
-                // other long name has taken, so it depends only on this name, not on how
-                // many came before it.
+                // We use all upper case above, so lower here can't conflict. Start with
+                // 16 hex digits to make a collision remote, and lengthen on collision so
+                // distinct long names still get distinct short names.
                 VHashSha256 hash;
                 hash.insert(longname);
                 const string hashStr = hash.digestHex();
-                for (string::size_type len = 8;; ++len) {
+                for (string::size_type len = 16;; ++len) {
                     UASSERT_OBJ(len <= hashStr.size(), srcModp, "Hash collision on " << longname);
                     newname = srcModp->name() + "__pi" + hashStr.substr(0, len);
                     if (m_shortNames.emplace(newname, longname).second) break;

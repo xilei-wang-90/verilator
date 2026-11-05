@@ -70,7 +70,7 @@ class EmitCHeader final : public EmitCConstInit {
             }
         }
     }
-    void emitDesignVarDecls(const AstNodeModule* modp) {
+    void emitDesignVarDecls(const AstNodeModule* modp, bool skipLibrary = false) {
         bool first = true;
         std::vector<const AstVar*> varList;
         bool lastAnon = false;  // initial value is not important, but is used
@@ -127,6 +127,7 @@ class EmitCHeader final : public EmitCConstInit {
         // Emit variables in consecutive anon and non-anon batches
         for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
             if (const AstVar* const varp = VN_CAST(nodep, Var)) {
+                if (skipLibrary && EmitCUtil::isLibraryRootVar(varp)) continue;
                 if (varp->isIO() || varp->isSignal() || varp->isClassMember() || varp->isTemp()
                     || varp->isGenVar()) {
                     const bool anon = EmitCUtil::isAnonOk(varp);
@@ -148,7 +149,8 @@ class EmitCHeader final : public EmitCConstInit {
             }
         } else {  // not class
             putsDecoration(nullptr, "\n// INTERNAL VARIABLES\n");
-            puts(EmitCUtil::symClassName() + "* vlSymsp;\n");
+            const string symName = EmitCUtil::symClassNameFor(modp);
+            puts(symName + "* vlSymsp;\n");
             puts("const char* vlNamep;\n");
             // Allocate object-local coverage counters only on modules that
             // contain emitted coverage declarations.
@@ -191,7 +193,8 @@ class EmitCHeader final : public EmitCConstInit {
         // construction/destruction code
         const std::string name = EmitCUtil::prefixNameProtect(modp);
         putsDecoration(nullptr, "\n// CONSTRUCTORS\n");
-        const std::string ctorArgs = EmitCUtil::symClassName() + "* symsp, const char* namep";
+        const string symName = EmitCUtil::symClassNameFor(modp);
+        const std::string ctorArgs = symName + "* symsp, const char* namep";
         if (modp->isTop()) {
             putns(modp, name + "(" + ctorArgs + ");\n");
             putns(modp, "~" + name + "();\n");
@@ -615,12 +618,17 @@ class EmitCHeader final : public EmitCConstInit {
         }
 
         // Forward declarations required by this AstNodeModule
-        puts("\nclass " + EmitCUtil::symClassName() + ";\n");
+        puts("\nclass " + EmitCUtil::symClassNameFor(modp) + ";\n");
+        if (EmitCUtil::useLibrarySplit() && VN_IS(modp, ClassPackage))
+            puts("class " + EmitCUtil::librarySymClassName() + ";\n");
 
         // From `systemc_header
         emitSystemCSection(modp, VSystemCSectionType::HDR);
 
         emitStructs(modp);
+
+        const bool splitRoot = EmitCUtil::useLibrarySplit()
+                               && modp == v3Global.rootp()->topModulep();
 
         // Open class body {{{
         puts("\n");
@@ -643,6 +651,8 @@ class EmitCHeader final : public EmitCConstInit {
             } else {
                 puts("public virtual VlClass");
             }
+        } else if (splitRoot) {
+            puts(" : public " + EmitCUtil::libraryRootClassName());
         } else {
             puts(" final");
         }
@@ -653,7 +663,7 @@ class EmitCHeader final : public EmitCConstInit {
         // Emit all class body contents
         emitCellDecls(modp);
         emitEnums(modp);
-        emitDesignVarDecls(modp);
+        emitDesignVarDecls(modp, splitRoot);
         emitInternalVarDecls(modp);
         emitParamDecls(modp);
         emitCtorDtorDecls(modp);
@@ -693,6 +703,12 @@ class EmitCHeader final : public EmitCConstInit {
         std::set<string> cuse_set;
         auto add_to_cuse_set = [&](string s) { cuse_set.insert(s); };
         forModCUse(modp, VUseType::INT_FWD_CLASS | VUseType::INT_INCLUDE, add_to_cuse_set);
+        if (const AstClassPackage* const packagep = VN_CAST(modp, ClassPackage)) {
+            // The static methods live in the package header too, so both the class and
+            // package headers need the declarations used by those method signatures.
+            forModCUse(packagep->classp(), VUseType::INT_FWD_CLASS | VUseType::INT_INCLUDE,
+                       add_to_cuse_set);
+        }
         for (const string& s : cuse_set) puts(s);
         puts("\n");
     }
@@ -715,25 +731,63 @@ class EmitCHeader final : public EmitCConstInit {
         closeOutputFile();
     }
 
+    void emitLibraryRoot(const AstNodeModule* modp) {
+        // Only the schedulers shared with library classes. All user cells and state stay in
+        // the derived root, so adding a declaration cannot change this header.
+        const string rootName = EmitCUtil::libraryRootClassName();
+        openNewOutputHeaderFile(rootName, "Library scheduler root header");
+        puts("// See " + EmitCUtil::topClassName() + ".h for the primary calling header\n");
+        ofp()->putsGuard();
+        puts("\n");
+        emitIncludes(modp);
+        puts("\nclass " + EmitCUtil::librarySymClassName() + ";\n");
+        puts("\nclass alignas(VL_CACHE_LINE_BYTES) " + rootName + " {\n");
+        ofp()->putsPrivate(false);  // public:
+        puts("// SCHEDULERS SHARED WITH LIBRARY CLASSES\n");
+        for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
+            if (const AstVar* const varp = VN_CAST(nodep, Var)) {
+                if (EmitCUtil::isLibraryRootVar(varp)) emitVarDecl(varp);
+            }
+        }
+        puts("\n// CONSTRUCTORS\n");
+        puts(rootName + "(" + EmitCUtil::librarySymClassName()
+             + "* symsp, const char* namep);\n");
+        puts("~" + rootName + "() = default;\n");
+        puts("VL_UNCOPYABLE(" + rootName + ");\n");
+        puts("};\n");
+        ofp()->putsEndGuard();
+        closeOutputFile();
+    }
+
     explicit EmitCHeader(const AstNodeModule* modp) {
         UINFO(5, "  Emitting header for " << EmitCUtil::prefixNameProtect(modp));
 
-        // Open output file
         openNewOutputHeaderFile(EmitCUtil::prefixNameProtect(modp), "Design internal header");
         puts("// See " + EmitCUtil::topClassName() + ".h for the primary calling header\n");
-
         ofp()->putsGuard();
 
         puts("\n");
         emitIncludes(modp);
+        const bool splitRoot = EmitCUtil::useLibrarySplit()
+                               && modp == v3Global.rootp()->topModulep();
+        if (splitRoot) puts("#include \"" + EmitCUtil::libraryRootClassName() + ".h\"\n");
         emitCUses(modp);
         emitAll(modp);
+        if (EmitCUtil::useLibrarySplit() && VN_IS(modp, ClassPackage)) {
+            // The library symbol header has no class-package members. This accessor is
+            // declared beside the class and defined with the full symbol table.
+            const string name = EmitCUtil::prefixNameProtect(modp);
+            puts("\n// CLASS PACKAGE INSTANCE ACCESS\n");
+            puts(name + "& " + name + "__Vsyms(" + EmitCUtil::librarySymClassName()
+                 + "* vlSymsp);\n");
+        }
 
         ofp()->putsEndGuard();
 
         // Close output file
         closeOutputFile();
 
+        if (splitRoot) emitLibraryRoot(modp);
         if (const AstClassPackage* const packagep = VN_CAST(modp, ClassPackage)) {
             emitClassHeader(packagep);
         }

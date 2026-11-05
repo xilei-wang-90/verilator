@@ -36,6 +36,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 
 // Some handy short-hands to reduce verbosity
 static constexpr auto symClassName = &EmitCUtil::symClassName;
+static constexpr auto librarySymClassName = &EmitCUtil::librarySymClassName;
 static constexpr auto topClassName = &EmitCUtil::topClassName;
 
 class EmitCSyms final : EmitCBaseVisitorConst {
@@ -119,6 +120,7 @@ class EmitCSyms final : EmitCBaseVisitorConst {
     std::vector<std::string> m_scopeTableRows;
 
     // METHODS
+    void emitLibrarySymHdr();
     void emitSymHdr();
     void emitSymImpPreamble();
     void emitVarTables();
@@ -853,8 +855,86 @@ public:
     }
 };
 
+void EmitCSyms::emitLibrarySymHdr() {
+    openNewOutputHeaderFile(librarySymClassName(), "Library symbol table internal header");
+    puts("//\n// Library-only details; user declarations live in the derived symbol table.\n");
+    ofp()->putsGuard();
+    puts("\n#include \"verilated.h\"\n");
+    if (v3Global.usesTiming()) puts("#include \"verilated_timing.h\"\n");
+    puts("#include \"" + EmitCUtil::libraryRootClassName() + ".h\"\n");
+
+    puts("\n// INCLUDE LIBRARY MODULE CLASSES\n");
+    for (AstNodeModule* nodep = v3Global.rootp()->modulesp(); nodep;
+         nodep = VN_AS(nodep->nextp(), NodeModule)) {
+        if (VN_IS(nodep, Class) || VN_IS(nodep, ClassPackage)
+            || !EmitCUtil::isLibraryModule(nodep))
+            continue;
+        putns(nodep, "#include \"" + EmitCUtil::prefixNameProtect(nodep) + ".h\"\n");
+    }
+
+    puts("\n// LIBRARY SYMS CLASS\n");
+    puts("class alignas(VL_CACHE_LINE_BYTES) " + librarySymClassName()
+         + " : public VerilatedSyms {\n");
+    ofp()->putsPrivate(false);  // public:
+    puts("const std::string __Vm_name;\n");
+    if (v3Global.hasEvents()) {
+        puts(v3Global.assignsEvents() ? "std::vector<VlAssignableEvent> __Vm_triggeredEvents;\n"
+                                      : "std::vector<VlEvent*> __Vm_triggeredEvents;\n");
+    }
+    puts("VlDeleter __Vm_deleter;\n");
+    if (m_coverBins) {
+        puts(v3Global.opt.threads() > 1 ? "std::atomic<uint32_t>" : "uint32_t");
+        puts(" __Vcoverage[");
+        puts(std::to_string(m_coverBins));
+        puts("];\n");
+    }
+    for (const auto& itpair : m_scopeNames) {
+        const ScopeData& sd = itpair.second;
+        if (EmitCUtil::isLibraryScopeName(sd.m_symName))
+            putns(sd.m_nodep, "VerilatedScope* " + protect("__Vscopep_" + sd.m_symName) + ";\n");
+    }
+
+    puts("\n// LIBRARY ROOT AND MODULE INSTANCE STATE\n");
+    puts(EmitCUtil::libraryRootClassName() + "& TOP;\n");
+    for (const ScopeModPair& itpair : m_scopes) {
+        const AstScope* const scopep = itpair.first;
+        const AstNodeModule* const modp = itpair.second;
+        if (modp == v3Global.rootp()->topModulep() || VN_IS(modp, ClassPackage)
+            || !EmitCUtil::isLibraryModule(modp))
+            continue;
+        const std::string name = EmitCUtil::prefixNameProtect(modp);
+        ofp()->printf("%-30s ", name.c_str());
+        putns(scopep, VIdProtect::protectIf(scopep->nameDotless(), scopep->protect()) + ";\n");
+    }
+    puts("\n// CONSTRUCTORS\n");
+    puts(librarySymClassName() + "(VerilatedContext* contextp, const char* namep, "
+         + EmitCUtil::libraryRootClassName() + "& rootp);\n");
+    puts("\n// METHODS\n");
+    puts("const char* name() const { return __Vm_name.c_str(); }\n");
+    if (v3Global.hasEvents()) {
+        puts(v3Global.assignsEvents() ? "void fireEvent(VlAssignableEvent& event) {\n"
+                                      : "void fireEvent(VlEvent& event) {\n");
+        puts("if (VL_LIKELY(!event.isTriggered())) {\n");
+        puts(v3Global.assignsEvents() ? "__Vm_triggeredEvents.push_back(event);\n"
+                                      : "__Vm_triggeredEvents.push_back(&event);\n");
+        puts("}\nevent.fire();\n}\n");
+        puts("void clearTriggeredEvents() {\n");
+        if (v3Global.assignsEvents()) {
+            puts("for (auto& event : __Vm_triggeredEvents) event.clearTriggered();\n");
+        } else {
+            puts("for (const auto eventp : __Vm_triggeredEvents) eventp->clearTriggered();\n");
+        }
+        puts("__Vm_triggeredEvents.clear();\n}\n");
+    }
+    puts("};\n");
+    ofp()->putsEndGuard();
+    closeOutputFile();
+}
+
 void EmitCSyms::emitSymHdr() {
     UINFO(6, __FUNCTION__ << ": ");
+    const bool split = EmitCUtil::useLibrarySplit();
+    if (split) emitLibrarySymHdr();
     openNewOutputHeaderFile(symClassName(), "Symbol table internal header");
     puts("//\n");
     puts("// Internal details; most calling programs do not need this header,\n");
@@ -871,6 +951,7 @@ void EmitCSyms::emitSymHdr() {
     }
     if (v3Global.opt.usesProfiler()) puts("#include \"verilated_profiler.h\"\n");
 
+    if (split) puts("#include \"" + librarySymClassName() + ".h\"\n");
     puts("\n// INCLUDE MODEL CLASS\n");
     puts("\n#include \"" + topClassName() + ".h\"\n");
 
@@ -878,6 +959,7 @@ void EmitCSyms::emitSymHdr() {
     for (AstNodeModule *nodep = v3Global.rootp()->modulesp(), *nextp; nodep; nodep = nextp) {
         nextp = VN_AS(nodep->nextp(), NodeModule);
         if (VN_IS(nodep, Class)) continue;  // Class included earlier
+        if (split && EmitCUtil::isLibraryModule(nodep) && !VN_IS(nodep, ClassPackage)) continue;
         putns(nodep, "#include \"" + EmitCUtil::prefixNameProtect(nodep) + ".h\"\n");
     }
 
@@ -896,8 +978,8 @@ void EmitCSyms::emitSymHdr() {
     }
 
     puts("\n// SYMS CLASS (contains all model state)\n");
-    puts("class alignas(VL_CACHE_LINE_BYTES) " + symClassName()
-         + " final : public VerilatedSyms {\n");
+    puts("class alignas(VL_CACHE_LINE_BYTES) " + symClassName() + " final : public "
+         + (split ? librarySymClassName() : "VerilatedSyms"s) + " {\n");
     ofp()->putsPrivate(false);  // public:
 
     puts("// INTERNAL STATE\n");
@@ -918,14 +1000,14 @@ void EmitCSyms::emitSymHdr() {
         puts("uint32_t __Vm_baseCode = 0;"
              "  ///< Used by trace routines when tracing multiple models\n");
     }
-    if (v3Global.hasEvents()) {
+    if (!split && v3Global.hasEvents()) {
         if (v3Global.assignsEvents()) {
             puts("std::vector<VlAssignableEvent> __Vm_triggeredEvents;\n");
         } else {
             puts("std::vector<VlEvent*> __Vm_triggeredEvents;\n");
         }
     }
-    if (v3Global.hasClasses()) puts("VlDeleter __Vm_deleter;\n");
+    if (!split && v3Global.hasClasses()) puts("VlDeleter __Vm_deleter;\n");
     puts("bool& __Vm_didInit;\n");
 
     if (v3Global.opt.mtasks()) {
@@ -947,16 +1029,25 @@ void EmitCSyms::emitSymHdr() {
     }
 
     puts("\n// MODULE INSTANCE STATE\n");
+    if (split) {
+        const string rootName = EmitCUtil::prefixNameProtect(v3Global.rootp()->topModulep());
+        puts(rootName + " __Vm_root;\n");
+        puts(rootName + "& TOP;\n");
+    }
     for (const ScopeModPair& itpair : m_scopes) {
         const AstScope* const scopep = itpair.first;
         const AstNodeModule* const modp = itpair.second;
         if (VN_IS(modp, Class)) continue;
+        if (split
+            && (modp == v3Global.rootp()->topModulep()
+                || (EmitCUtil::isLibraryModule(modp) && !VN_IS(modp, ClassPackage))))
+            continue;
         const std::string name = EmitCUtil::prefixNameProtect(modp);
         ofp()->printf("%-30s ", name.c_str());
         putns(scopep, VIdProtect::protectIf(scopep->nameDotless(), scopep->protect()) + ";\n");
     }
 
-    if (m_coverBins) {
+    if (!split && m_coverBins) {
         puts("\n// COVERAGE\n");
         puts(v3Global.opt.threads() > 1 ? "std::atomic<uint32_t>" : "uint32_t");
         puts(" __Vcoverage[");
@@ -968,6 +1059,8 @@ void EmitCSyms::emitSymHdr() {
         puts("\n// SCOPE NAMES\n");
         for (const auto& itpair : m_scopeNames) {
             const ScopeData& sd = itpair.second;
+            if (split && EmitCUtil::isLibraryScopeName(sd.m_symName))
+                continue;
             putns(sd.m_nodep, "VerilatedScope* " + protect("__Vscopep_" + sd.m_symName) + ";\n");
         }
     }
@@ -987,7 +1080,7 @@ void EmitCSyms::emitSymHdr() {
     puts("\n// METHODS\n");
     puts("const char* name() const { return TOP.vlNamep; }\n");
 
-    if (v3Global.hasEvents()) {
+    if (!split && v3Global.hasEvents()) {
         if (v3Global.assignsEvents()) {
             puts("void fireEvent(VlAssignableEvent& event) {\n");
         } else {
@@ -1475,10 +1568,37 @@ void EmitCSyms::emitSymImp(const AstNetlist* netlistp) {
     emitVarTables();
 
     // Constructor
+    const bool split = EmitCUtil::useLibrarySplit();
+    if (split) {
+        // Per-package accessors let library code reach static class state without putting
+        // those instances in the library symbol header.
+        for (const ScopeModPair& itpair : m_scopes) {
+            const AstNodeModule* const modp = itpair.second;
+            if (!VN_IS(modp, ClassPackage)) continue;
+            const string name = EmitCUtil::prefixNameProtect(modp);
+            const string field = VIdProtect::protectIf(itpair.first->nameDotless(),
+                                                        itpair.first->protect());
+            puts(name + "& " + name + "__Vsyms(" + librarySymClassName() + "* vlSymsp) {\n");
+            puts("return static_cast<" + symClassName() + "*>(vlSymsp)->" + field + ";\n}\n");
+        }
+    }
+    if (split) {
+        puts(librarySymClassName() + "::" + librarySymClassName()
+             + "(VerilatedContext* contextp, const char* namep, "
+             + EmitCUtil::libraryRootClassName() + "& rootp)\n");
+        puts("    : VerilatedSyms{contextp}\n");
+        puts("    , __Vm_name{namep}\n");
+        puts("    , TOP{rootp}\n");
+        puts("{}\n\n");
+    }
     const std::string ctorArgs
         = "VerilatedContext* contextp, const char* namep, " + topClassName() + "* modelp";
     puts(symClassName() + "::" + symClassName() + "(" + ctorArgs + ")\n");
-    puts("    : VerilatedSyms{contextp}\n");
+    if (split) {
+        puts("    : " + librarySymClassName() + "{contextp, namep, __Vm_root}\n");
+    } else {
+        puts("    : VerilatedSyms{contextp}\n");
+    }
     puts("    // Setup internal state of the Syms class\n");
     puts("    , __Vm_modelp{modelp}\n");
     puts("    , __Vm_didInit{modelp->m_didInit}\n");
@@ -1495,7 +1615,12 @@ void EmitCSyms::emitSymImp(const AstNetlist* netlistp) {
     {
         const AstScope* const scopep = netlistp->topScopep()->scopep();
         puts("    // Setup top module instance\n");
-        puts("    , " + protect(scopep->nameDotless()) + "{this, namep}\n");
+        if (split) {
+            puts("    , __Vm_root{this, namep}\n");
+            puts("    , " + protect(scopep->nameDotless()) + "{__Vm_root}\n");
+        } else {
+            puts("    , " + protect(scopep->nameDotless()) + "{this, namep}\n");
+        }
     }
     puts("{\n");
     for (const std::string& stmt : ctorStmts) {

@@ -404,7 +404,7 @@ class EmitCModel final : public EmitCFunc {
         UASSERT_OBJ(modp->isTop(), modp, "Attempting to emitWrapEval for non-top class");
 
         const string topModNameProtected = EmitCUtil::prefixNameProtect(modp);
-        const string selfDecl = "(" + topModNameProtected + "* vlSelf)";
+        const string selfDecl = "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf)";
 
         putSectionDelimiter("Evaluation function");
 
@@ -588,13 +588,13 @@ class EmitCModel final : public EmitCFunc {
         // Forward declaration
         if (!v3Global.opt.libCreate().empty()) {
             putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_init_root") + "("
-                            + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                            + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                             + "* tracep);\n");
         }
         putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_decl_types") + "("
                         + v3Global.opt.traceClassBase() + "* tracep);\n");
         putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_init_top") + "("
-                        + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                        + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                         + "* tracep);\n");
 
         // Static helper function
@@ -635,7 +635,7 @@ class EmitCModel final : public EmitCFunc {
         // Forward declaration
         puts("\n");
         putns(modp, "VL_ATTR_COLD void " + topModNameProtected + "__" + protect("trace_register")
-                        + "(" + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                        + "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                         + "* tracep);\n");
 
         // ::traceRegisterModel

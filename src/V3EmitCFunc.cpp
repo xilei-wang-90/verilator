@@ -396,6 +396,21 @@ void EmitCFunc::emitCCallArgs(const AstNodeCCall* nodep, const string& selfPoint
 
 std::string EmitCFunc::dereferenceString(const std::string& pointer) const {
     if (pointer[0] == '(' && pointer[1] == '&') {
+        static const string symsPrefix = "(&vlSymsp->";
+        static const string classSuffix = "__Vclpkg)";
+        if (EmitCUtil::useLibrarySplit() && VString::startsWith(pointer, symsPrefix)
+            && pointer.size() > symsPrefix.size() + classSuffix.size()
+            && pointer.compare(pointer.size() - classSuffix.size(), classSuffix.size(),
+                               classSuffix)
+                   == 0) {
+            // The full table owns the class package. Its accessor needs no declaration
+            // added to the library symbol header when a new class appears.
+            string name
+                = pointer.substr(symsPrefix.size(),
+                                 pointer.size() - symsPrefix.size() - classSuffix.size());
+            if (VString::startsWith(name, "TOP__")) name.erase(0, 5);
+            return v3Global.opt.prefix() + "_" + name + "__Vclpkg__Vsyms(vlSymsp).";
+        }
         // remove "address of" followed by immediate dereference
         // Note: this relies on only the form '(&OBJECT)' being used by Verilator
         return pointer.substr(2, pointer.length() - 3) + '.';

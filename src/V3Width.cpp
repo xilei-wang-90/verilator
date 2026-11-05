@@ -65,6 +65,7 @@
 
 #include "V3PchAstNoMT.h"  // VL_MT_DISABLED_CODE_UNIT
 
+#include "V3UniqueNames.h"
 #include "V3Width.h"
 
 #include "V3Ast.h"
@@ -9954,6 +9955,7 @@ class WidthVisitor final : public VNVisitor {
     static AstVar* enumVarp(AstEnumDType* const nodep, VAttrType attrType, bool assoc,
                             uint32_t msbdim) {
         // Return a variable table which has specified dimension properties for this variable
+        static V3UniqueNames names;  // Shared across all WidthVisitor instances
         const auto pair = nodep->tableMap().emplace(attrType, nullptr);
         if (pair.second) {
             UINFO(9, "Construct Venumtab attr=" << attrType.ascii() << " assoc=" << assoc
@@ -9979,10 +9981,11 @@ class WidthVisitor final : public VNVisitor {
             }
             AstInitArray* const initp = new AstInitArray{nodep->fileline(), vardtypep, nullptr};
             v3Global.rootp()->typeTablep()->addTypesp(vardtypep);
-            AstVar* const varp = new AstVar{nodep->fileline(), VVarType::MODULETEMP,
-                                            "__Venumtab_" + VString::downcase(attrType.ascii())
-                                                + cvtToStr(nodep->uniqueNum()),
-                                            vardtypep};
+            AstVar* const varp = new AstVar{
+                nodep->fileline(), VVarType::MODULETEMP,
+                names.get("__Venumtab_" + VString::downcase(attrType.ascii()) + "_"
+                          + V3Hasher::stableName(nodep)),
+                vardtypep};
             varp->lifetime(VLifetime::STATIC_EXPLICIT);
             varp->isConst(true);
             varp->isStatic(true);

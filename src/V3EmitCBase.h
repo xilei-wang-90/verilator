@@ -72,9 +72,52 @@ public:
     static string symClassName() VL_MT_STABLE {
         return v3Global.opt.prefix() + "_" + VIdProtect::protect("_Syms");
     }
+    // Class designs get a library-only view of the symbol table and root. UVM and std
+    // implementation files use it so user declarations cannot invalidate their inputs.
+    static bool useLibrarySplit() VL_MT_STABLE { return v3Global.hasClasses(); }
+    static string libraryPchClassName() VL_MT_STABLE { return pchClassName() + "__Vlib"; }
+    static string librarySymClassName() VL_MT_STABLE { return symClassName() + "__Vlib"; }
+    static string symClassNameFor(const AstNodeModule* modp) VL_MT_STABLE {
+        return isLibraryModule(modp) ? librarySymClassName() : symClassName();
+    }
+    static string libraryRootClassName() VL_MT_STABLE {
+        return prefixNameProtect(v3Global.rootp()->topModulep()) + "__Vlib";
+    }
+    static string topSelfClassName(const AstNodeModule* modp) VL_MT_STABLE {
+        return useLibrarySplit() && modp == v3Global.rootp()->topModulep()
+                   ? libraryRootClassName()
+                   : prefixNameProtect(modp);
+    }
+    static bool isLibraryFile(const string& name) VL_MT_STABLE {
+        if (!useLibrarySplit()) return false;
+        for (const char* const library : {"uvm_pkg", "std"}) {
+            const string stem = v3Global.opt.prefix() + "_" + library;
+            // The __ suffix covers both class scopes (__03a__03a) and a package's
+            // numbered or Slow implementation splits.
+            if (name == stem || VString::startsWith(name, stem + "__")) return true;
+        }
+        return false;
+    }
+    static bool isLibraryModule(const AstNodeModule* modp) VL_MT_STABLE {
+        return isLibraryFile(prefixNameProtect(modp));
+    }
+    static bool isLibraryScopeName(const string& name) VL_MT_STABLE {
+        return name == "uvm_pkg" || name == "std"
+               || VString::startsWith(name, "uvm_pkg__")
+               || VString::startsWith(name, "std__");
+    }
+    static bool isLibraryRootVar(const AstVar* varp) VL_MT_SAFE {
+        const AstBasicDType* const basicp = varp->basicp();
+        if (basicp
+            && (basicp->isDelayScheduler() || basicp->isTriggerScheduler()
+                || basicp->isDynamicTriggerScheduler()))
+            return true;
+        return varp->libraryRoot();
+    }
     static string symClassVar() { return symClassName() + "* __restrict vlSymsp"; }
-    static string symClassAssign() {
-        return symClassName() + "* const __restrict vlSymsp VL_ATTR_UNUSED = vlSelf->vlSymsp;\n";
+    static string symClassAssign(const AstNodeModule* modp = nullptr) {
+        const string symName = modp ? symClassNameFor(modp) : symClassName();
+        return symName + "* const __restrict vlSymsp VL_ATTR_UNUSED = vlSelf->vlSymsp;\n";
     }
     static string topClassName() VL_MT_SAFE {  // Return name of top wrapper module
         return v3Global.opt.prefix();

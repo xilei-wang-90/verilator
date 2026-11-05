@@ -3564,6 +3564,7 @@ void AstVar::dump(std::ostream& str) const {
     if (isReadByDpi()) str << " [DPIRD]";
     if (isWrittenByDpi()) str << " [DPIWR]";
     if (isInternal()) str << " [INTERNAL]";
+    if (libraryRoot()) str << " [LIBROOT]";
     if (isLatched()) str << " [LATCHED]";
     if (isUsedLoopIdx()) str << " [LOOPIDX]";
     if (rand().isRandomizable()) str << " [" << rand().ascii() << "]";
@@ -3631,6 +3632,7 @@ void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, hasUserInit);
     dumpJsonBoolFuncIf(str, ignorePostWrite);
     dumpJsonBoolFuncIf(str, ignoreSchedWrite);
+    dumpJsonBoolFuncIf(str, libraryRoot);
     if (rand().isRandomizable()) dumpJsonStr(str, "rand", rand().ascii());
     dumpJsonGen(str);
 }

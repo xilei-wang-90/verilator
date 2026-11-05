@@ -416,6 +416,19 @@ public:
         emitCFuncHeader(nodep, m_modp, /* withScope: */ true);
 
         puts(" {\n");
+        if (EmitCUtil::useLibrarySplit()) {
+            const string symsArg = EmitCUtil::symClassName() + "* __restrict vlSymsp";
+            if (nodep->argTypes().find(symsArg) != string::npos) {
+                const string symName = EmitCUtil::symClassNameFor(m_modp);
+                puts(symName + "* const __restrict vlSymsp = static_cast<" + symName
+                     + "*>(vlSymspLib);\n");
+            }
+            if (nodep->isLoose() && !nodep->isStatic()
+                && m_modp == v3Global.rootp()->topModulep()) {
+                const string rootName = EmitCUtil::prefixNameProtect(m_modp);
+                puts(rootName + "* const vlSelf = static_cast<" + rootName + "*>(vlSelfLib);\n");
+            }
+        }
         if (nodep->isConstructor()) {
             const AstClass* const classp = VN_CAST(nodep->scopep()->modp(), Class);
             if (classp && classp->extendsp()) putConstructorSubinit(classp, nodep);
@@ -433,7 +446,7 @@ public:
             if (!nodep->isStatic()) {  // Standard prologue
                 m_useSelfForThis = true;
                 if (!VN_IS(m_modp, Class)) {
-                    puts(EmitCUtil::symClassAssign());  // Uses vlSelf
+                    puts(EmitCUtil::symClassAssign(m_modp));  // Uses vlSelf
                 } else {
                     puts("(void)vlSelf;  // Prevent unused variable warning\n");
                 }

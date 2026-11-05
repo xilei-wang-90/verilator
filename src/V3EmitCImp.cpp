@@ -43,7 +43,10 @@ class EmitCImp final : public EmitCFunc {
         openNewOutputSourceFile(fileName, m_slow, false, "Design implementation internals");
         puts("// See " + EmitCUtil::topClassName() + ".h for the primary calling header\n");
         puts("\n");
-        puts("#include \"" + EmitCUtil::pchClassName() + ".h\"\n");
+        const bool library = EmitCUtil::isLibraryModule(m_fileModp);
+        puts("#include \"" + (library ? EmitCUtil::libraryPchClassName()
+                                      : EmitCUtil::pchClassName())
+             + ".h\"\n");
         emitClassIncludes();
         emitSystemCSection(m_fileModp, VSystemCSectionType::IMP_HDR);
         // Need to emit new lazy declarations
@@ -51,8 +54,7 @@ class EmitCImp final : public EmitCFunc {
     }
 
     void emitClassIncludes() {
-        // __Syms.h, through the precompiled header, has each class package's static part
-        // only; the classes this module's code uses come from their own headers
+        // The classes this module's code uses come from their own headers
         // (VUseType::IMP_INCLUDE), the class itself first when this is a class package
         std::set<std::string> names;
         const AstNodeModule* const classp = VN_IS(m_fileModp, ClassPackage)
@@ -112,24 +114,50 @@ class EmitCImp final : public EmitCFunc {
     }
     void emitCtorImp(const AstNodeModule* modp) {
         const std::string modName = EmitCUtil::prefixNameProtect(modp);
+        const bool splitRoot = EmitCUtil::useLibrarySplit() && modp->isTop();
 
         puts("\n");
         if (modp->ctorVarReset())
             m_lazyDecls.emit("void " + modName + "__", protect("_ctor_var_reset"),
-                             "(" + modName + "* vlSelf);");
+                             "(" + EmitCUtil::topSelfClassName(modp)
+                             + "* vlSelf);");
         puts("\n");
 
-        const std::string ctorArgs = EmitCUtil::symClassName() + "* symsp, const char* namep";
+        const string symName = EmitCUtil::symClassNameFor(modp);
+        const std::string ctorArgs = symName + "* symsp, const char* namep";
 
         // The root module needs a proper constuctor, everything else uses a
         // 'ctor' function in order to be able to split up constructors
         if (modp->isTop()) {
+            if (splitRoot) {
+                const string libraryRoot = EmitCUtil::libraryRootClassName();
+                puts(libraryRoot + "::" + libraryRoot + "("
+                     + EmitCUtil::librarySymClassName() + "* symsp, const char* namep)\n");
+                const char* baseSepp = "  : ";
+                for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
+                    if (const AstVar* const varp = VN_CAST(nodep, Var)) {
+                        if (varp->basicp() && varp->basicp()->isDelayScheduler()) {
+                            puts(baseSepp);
+                            putns(varp, varp->nameProtect());
+                            puts("{*symsp->_vm_contextp__}\n");
+                            baseSepp = ", ";
+                        }
+                    }
+                }
+                puts("{\n(void)symsp;\n(void)namep;\n}\n\n");
+            }
             putns(modp, modName + "::" + modName + "(" + ctorArgs + ")\n");
 
             ofp()->indentInc();
             const char* sepp = "  : ";
+            if (splitRoot) {
+                puts(sepp);
+                puts(EmitCUtil::libraryRootClassName() + "{symsp, namep}\n");
+                sepp = ", ";
+            }
             for (const AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
                 if (const AstVar* const varp = VN_CAST(nodep, Var)) {
+                    if (splitRoot && EmitCUtil::isLibraryRootVar(varp)) continue;
                     if (const AstBasicDType* const dtypep
                         = VN_CAST(varp->dtypeSkipRefp(), BasicDType)) {
                         if (dtypep->keyword().isMTaskState()) {
@@ -181,8 +209,10 @@ class EmitCImp final : public EmitCFunc {
 
         if (v3Global.opt.coverage()) {
             puts("\n");
+            const bool splitRoot = EmitCUtil::useLibrarySplit() && modp->isTop();
             m_lazyDecls.emit("void " + modName + "__", protect("_configure_coverage"),
-                             "(" + modName + "* vlSelf, bool first);");
+                             "(" + EmitCUtil::topSelfClassName(modp)
+                                 + "* vlSelf, bool first);");
         }
 
         puts("\nvoid " + modName + "::" + protect("__Vconfigure") + "(bool first) {\n");

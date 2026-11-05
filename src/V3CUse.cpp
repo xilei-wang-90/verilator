@@ -42,6 +42,7 @@ class CUseVisitor final : public VNVisitorConst {
     AstNodeModule* const m_modp;  // Current module
     std::map<std::string, std::pair<FileLine*, VUseType>> m_didUse;  // What we already used
     std::unordered_map<const AstCFunc*, const AstNodeModule*> m_owner;  // ownerOf() memo
+    const std::unordered_map<const AstVar*, const AstNodeModule*>& m_varOwners;
 
     // METHODS
     void addNewUse(const AstNode* nodep, VUseType useType, const string& name) {
@@ -83,6 +84,36 @@ class CUseVisitor final : public VNVisitorConst {
         addNewUse(nodep, VUseType::IMP_INCLUDE, classp->name());
     }
     void visit(AstClassRefDType* nodep) override { addClassUse(nodep, nodep->classp()); }
+    void visit(AstIfaceRefDType* nodep) override {
+        if (nodep->user1SetOnce()) return;
+        // A virtual interface is a pointer in generated code, so a forward declaration is
+        // sufficient even when the interface itself is user code.
+        if (nodep->ifacep()) {
+            addNewUse(nodep, VUseType::INT_FWD_CLASS, nodep->ifacep()->name());
+        }
+        iterateChildrenConst(nodep);
+    }
+    void visit(AstVarRef* nodep) override {
+        if (nodep->user1SetOnce()) return;
+        if (nodep->varp()->lifetime().isStatic()
+            && (!nodep->varp()->isTemp() || nodep->varp()->isConst())
+            && !nodep->varp()->isSignal() && !nodep->varp()->isIO()) {
+            // Static data access names its owning module explicitly. Resolve through
+            // the netlist's variable map when the reference has no direct owner pointers.
+            const AstNodeModule* ownerp = nodep->classOrPackagep();
+            if (!ownerp && nodep->varScopep()) ownerp = nodep->varScopep()->scopep()->modp();
+            if (!ownerp) {
+                const auto it = m_varOwners.find(nodep->varp());
+                if (it != m_varOwners.end()) ownerp = it->second;
+            }
+            if (!ownerp) ownerp = v3Global.rootp()->dollarUnitPkgAddp();
+            if (const AstClass* const classp = VN_CAST(ownerp, Class))
+                ownerp = classp->classOrPackagep();
+            addNewUse(nodep, VUseType::IMP_INCLUDE, ownerp->name());
+        }
+        if (nodep->dtypep()) iterateConst(nodep->dtypep());
+        iterateChildrenConst(nodep);
+    }
     void visit(AstCFunc* nodep) override {
         if (nodep->user1SetOnce()) return;
         iterateAndNextConstNull(nodep->argsp());
@@ -94,8 +125,13 @@ class CUseVisitor final : public VNVisitorConst {
         // to the parameter's type here. The callee's body is its own module's business.
         if (nodep->user1SetOnce()) return;
         if (const AstCFunc* const funcp = nodep->funcp()) {
-            if (const AstClass* const classp = VN_CAST(ownerOf(funcp), Class))
+            const AstNodeModule* const ownerp = ownerOf(funcp);
+            if (const AstClass* const classp = VN_CAST(ownerp, Class)) {
                 addClassUse(nodep, classp);
+            } else if (VN_IS(ownerp, ClassPackage)) {
+                // Calling the package's method dereferences its singleton accessor.
+                    addNewUse(nodep, VUseType::IMP_INCLUDE, ownerp->name());
+            }
             for (const AstNode* argp = funcp->argsp(); argp; argp = argp->nextp()) {
                 if (argp->dtypep()) iterateConst(argp->dtypep());
             }
@@ -142,8 +178,10 @@ class CUseVisitor final : public VNVisitorConst {
 
 public:
     // CONSTRUCTORS
-    explicit CUseVisitor(AstNodeModule* modp)
-        : m_modp{modp} {
+    explicit CUseVisitor(AstNodeModule* modp,
+                         const std::unordered_map<const AstVar*, const AstNodeModule*>& varOwners)
+        : m_modp{modp}
+        , m_varOwners{varOwners} {
         iterateConst(modp);
         if (AstClass* const classp = VN_CAST(modp, Class)) {
             // clone() resets the class's embedded covergroups, inherited ones included
@@ -170,12 +208,17 @@ public:
 
 void V3CUse::cUseAll() {
     UINFO(2, __FUNCTION__ << ":");
+    std::unordered_map<const AstVar*, const AstNodeModule*> varOwners;
+    for (const AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
+         modp = VN_AS(modp->nextp(), NodeModule)) {
+        modp->foreach([&](const AstVar* varp) { varOwners.emplace(varp, modp); });
+    }
     // Call visitor separately for each module, so visitor state is cleared
     for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
          modp = VN_AS(modp->nextp(), NodeModule)) {
         // Insert under this module; someday we should e.g. make Ast
         // for each output file and put under that
-        CUseVisitor{modp};
+        CUseVisitor{modp, varOwners};
     }
     V3Global::dumpCheckGlobalTree("cuse", 0, dumpTreeEitherLevel() >= 3);
 }

@@ -19,6 +19,7 @@
 #include "V3EmitMk.h"
 
 #include "V3EmitCBase.h"
+#include "V3Hash.h"
 #include "V3HierBlock.h"
 #include "V3Os.h"
 
@@ -393,6 +394,75 @@ private:
                 "More output files than input files. First extra file: " << ofIt->m_filename);
     }
 
+    static size_t stableBucket(const string& filename, size_t bucketsNum) {
+        VHashSha256 hash;
+        hash.insert(filename);
+        return std::stoul(hash.digestHex().substr(0, 8), nullptr, 16) % bucketsNum;
+    }
+
+    static bool standaloneLibraryFile(const string& filename) {
+        // A new class creates new specializations. Keep those sources out of existing
+        // groups, so their arrival cannot invalidate unrelated library code.
+        return EmitCUtil::isLibraryFile(filename)
+               && (filename.find("__pi") != string::npos
+                   || filename.find("__Tz") != string::npos
+                   || filename.find("__VDynScope_") != string::npos);
+    }
+
+    void buildStableOutputList() {
+        // A group's membership and name depend on its filenames, not on the number or
+        // complexity of unrelated files. Emit at the first member's input position.
+        const bool hasLibrary = std::any_of(m_inputFiles.begin(), m_inputFiles.end(),
+                                            [](const FilenameWithScore& file) {
+                                                return EmitCUtil::isLibraryFile(file.m_filename);
+                                            });
+        const int configured = v3Global.opt.outputGroups();
+        const size_t bucketsNum = hasLibrary ? configured : std::min(configured, 2);
+        std::vector<std::vector<const FilenameWithScore*>> buckets{bucketsNum};
+        for (const FilenameWithScore& file : m_inputFiles) {
+            if (standaloneLibraryFile(file.m_filename)) continue;
+            const size_t bucket = stableBucket(file.m_filename, bucketsNum);
+            buckets[bucket].push_back(&file);
+        }
+        std::vector<bool> emitted(bucketsNum, false);
+        for (const FilenameWithScore& file : m_inputFiles) {
+            if (standaloneLibraryFile(file.m_filename)) {
+                m_outputFiles.push_back({file.m_filename, {}});
+                continue;
+            }
+            const size_t bucket = stableBucket(file.m_filename, bucketsNum);
+            if (emitted[bucket]) continue;
+            emitted[bucket] = true;
+            const std::vector<const FilenameWithScore*>& members = buckets[bucket];
+            if (members.size() == 1) {
+                m_outputFiles.push_back({file.m_filename, {}});
+                continue;
+            }
+            FileOrConcatenatedFilesList group{v3Global.opt.prefix() + "_" + m_groupFilePrefix
+                                                  + std::to_string(bucket),
+                                              {}};
+            for (const FilenameWithScore* const memberp : members) {
+                group.m_concatenatedFilenames.push_back(memberp->m_filename);
+            }
+            m_outputFiles.push_back(std::move(group));
+        }
+    }
+
+    void assertFilesComplete() const {
+        std::multiset<string> expected;
+        std::multiset<string> actual;
+        for (const FilenameWithScore& file : m_inputFiles) expected.emplace(file.m_filename);
+        for (const FileOrConcatenatedFilesList& entry : m_outputFiles) {
+            if (entry.isConcatenatingFile()) {
+                actual.insert(entry.m_concatenatedFilenames.begin(),
+                              entry.m_concatenatedFilenames.end());
+            } else {
+                actual.emplace(entry.m_filename);
+            }
+        }
+        UASSERT(expected == actual, "Stable output groups dropped or duplicated input files");
+    }
+
     void process() {
         UINFO(4, __FUNCTION__ << " group file prefix: " << m_groupFilePrefix);
         UINFO(5, "Number of input files: " << m_inputFiles.size());
@@ -402,6 +472,11 @@ private:
         UINFO(5, "Number of buckets: " << totalBucketsNum);
         UASSERT(totalBucketsNum > 0, "More than 0 buckets required");
 
+        if (EmitCUtil::useLibrarySplit()) {
+            buildStableOutputList();
+            assertFilesComplete();
+            return;
+        }
         if (fallbackNoGrouping(m_inputFiles.size())) return;
 
         if (debug() >= 6 || dumpLevel() >= 6) {
@@ -502,28 +577,51 @@ public:
         std::vector<FileOrConcatenatedFilesList> vmClassesSlowList;
         std::vector<FileOrConcatenatedFilesList> vmClassesFastList;
         if (v3Global.opt.outputGroups() > 0) {
-            std::vector<FilenameWithScore> slowFiles;
-            std::vector<FilenameWithScore> fastFiles;
-            uint64_t slowTotalScore = 0;
-            uint64_t fastTotalScore = 0;
+            std::vector<FilenameWithScore> librarySlowFiles;
+            std::vector<FilenameWithScore> libraryFastFiles;
+            std::vector<FilenameWithScore> userSlowFiles;
+            std::vector<FilenameWithScore> userFastFiles;
+            uint64_t librarySlowTotalScore = 0;
+            uint64_t libraryFastTotalScore = 0;
+            uint64_t userSlowTotalScore = 0;
+            uint64_t userFastTotalScore = 0;
 
             for (AstNodeFile* nodep = v3Global.rootp()->filesp(); nodep;
                  nodep = VN_AS(nodep->nextp(), NodeFile)) {
                 const AstCFile* const cfilep = VN_CAST(nodep, CFile);
                 if (cfilep && cfilep->source() && cfilep->support() == false) {
-                    std::vector<FilenameWithScore>& files = cfilep->slow() ? slowFiles : fastFiles;
-                    uint64_t& totalScore = cfilep->slow() ? slowTotalScore : fastTotalScore;
+                    const string filename = V3Os::filenameNonDirExt(cfilep->name());
+                    const bool library = EmitCUtil::isLibraryFile(filename);
+                    std::vector<FilenameWithScore>& files
+                        = cfilep->slow() ? (library ? librarySlowFiles : userSlowFiles)
+                                         : (library ? libraryFastFiles : userFastFiles);
+                    uint64_t& totalScore
+                        = cfilep->slow() ? (library ? librarySlowTotalScore : userSlowTotalScore)
+                                         : (library ? libraryFastTotalScore : userFastTotalScore);
 
                     totalScore += cfilep->complexityScore();
-                    files.push_back(
-                        {V3Os::filenameNonDirExt(cfilep->name()), cfilep->complexityScore()});
+                    files.push_back({filename, cfilep->complexityScore()});
                 }
             }
 
+            // Never concatenate a library source with a user source: the group file would
+            // otherwise change whenever its user members change.
             vmClassesSlowList = EmitGroup::singleConcatenatedFilesList(
-                std::move(slowFiles), slowTotalScore, "vm_classes_Slow_");
+                std::move(librarySlowFiles), librarySlowTotalScore, "vm_classes_library_Slow_");
             vmClassesFastList = EmitGroup::singleConcatenatedFilesList(
-                std::move(fastFiles), fastTotalScore, "vm_classes_");
+                std::move(libraryFastFiles), libraryFastTotalScore, "vm_classes_library_");
+            std::vector<FileOrConcatenatedFilesList> userSlowList
+                = EmitGroup::singleConcatenatedFilesList(std::move(userSlowFiles),
+                                                         userSlowTotalScore, "vm_classes_user_Slow_");
+            std::vector<FileOrConcatenatedFilesList> userFastList
+                = EmitGroup::singleConcatenatedFilesList(std::move(userFastFiles),
+                                                         userFastTotalScore, "vm_classes_user_");
+            for (FileOrConcatenatedFilesList& entry : userSlowList) {
+                vmClassesSlowList.push_back(std::move(entry));
+            }
+            for (FileOrConcatenatedFilesList& entry : userFastList) {
+                vmClassesFastList.push_back(std::move(entry));
+            }
         }
 
         // Generate the makefile

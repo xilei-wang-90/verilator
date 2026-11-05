@@ -599,6 +599,20 @@ V3Hash V3Hasher::uncachedHash(const AstNode* nodep) {
     return visitor.finalHash();
 }
 
+string V3Hasher::stableName(const AstNode* nodep) {
+    // A function of name(), the FileLine filename string, line and first column only,
+    // not of allocation-order node IDs. Sixteen hex digits make an accidental collision
+    // remote. Nodes that share all four values get a V3UniqueNames multiplicity suffix,
+    // which depends on the order in which callers reach them.
+    VHashSha256 hash;
+    hash.insert(cvtToStr(nodep->name().size()) + ":" + nodep->name());
+    hash.insert(cvtToStr(nodep->fileline()->filename().size()) + ":"
+                + nodep->fileline()->filename());
+    hash.insert(cvtToStr(nodep->fileline()->lineno()) + ":"
+                + cvtToStr(nodep->fileline()->firstColumn()));
+    return hash.digestHex().substr(0, 16);
+}
+
 //######################################################################
 // This is used by the std::hash specialization for VNRef.
 // Declared separately to avoid a circular header dependency.
