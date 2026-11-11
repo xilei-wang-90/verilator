@@ -343,7 +343,7 @@ class EmitCModel final : public EmitCFunc {
                 if (varp->isPrimaryIO()) {
                     const string protName = varp->nameProtect();
                     puts("    , ");
-                    putns(varp, protName + "{vlSymsp->vlInst.TOP." + varName(varp) + "}\n");
+                    putns(varp, protName + "{" + EmitCUtil::topRefFor(varp) + "." + varName(varp) + "}\n");
                 }
             }
         }
@@ -354,12 +354,12 @@ class EmitCModel final : public EmitCFunc {
                 if (cellp->modp()->isConstPool()) continue;  // Special emit rules
                 const string protName = cellp->nameProtect();
                 puts("    , ");
-                putns(cellp, protName + "{vlSymsp->vlInst.TOP." + protName + "}\n");
+                putns(cellp, protName + "{" + EmitCUtil::topRef() + "." + protName + "}\n");
             }
         }
 
         // Setup rootp root instance pointer,
-        puts("    , rootp{&(vlSymsp->vlInst.TOP)}\n");
+        puts("    , rootp{&(" + EmitCUtil::topRef() + ")}\n");
 
         puts("{\n");
         puts("// Register model with the context\n");
@@ -435,7 +435,7 @@ class EmitCModel final : public EmitCFunc {
         UASSERT_OBJ(modp->isTop(), modp, "Attempting to emitWrapEval for non-top class");
 
         const string topModNameProtected = EmitCUtil::prefixNameProtect(modp);
-        const string selfDecl = "(" + topModNameProtected + "* vlSelf)";
+        const string selfDecl = "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf)";
 
         putSectionDelimiter("Evaluation function");
 
@@ -478,7 +478,7 @@ class EmitCModel final : public EmitCFunc {
         puts("#ifdef VL_DEBUG\n");
         putsDecoration(nullptr, "// Debug assertions\n");
         puts(topModNameProtected + "__" + protect("_eval_debug_assertions")
-             + "(&(vlSymsp->vlInst.TOP));\n");
+             + "(&(" + EmitCUtil::topRef() + "));\n");
         puts("#endif  // VL_DEBUG\n");
 
         if (v3Global.opt.trace()) puts("vlSymsp->__Vm_activity = true;\n");
@@ -493,7 +493,7 @@ class EmitCModel final : public EmitCFunc {
         putsDecoration(nullptr, "// Evaluate cleanup\n");
         puts("Verilated::endOfEval(vlSymsp->__Vm_evalMsgQp);\n");
         if (AstVar* const delaySchedp = v3Global.rootp()->delaySchedulerp()) {
-            puts("vlSymsp->vlInst.TOP.");
+            puts(EmitCUtil::topRefFor(delaySchedp) + ".");
             puts(varName(delaySchedp));
             puts(".cleanupForevered();\n");
         }
@@ -509,7 +509,7 @@ class EmitCModel final : public EmitCFunc {
             if (eval.firstIteration()) puts("bool firstIteration");
             puts(") {\n");
             if (eval.isIterated()) puts("return ");
-            puts(funcNameProtect(funcp, m_modp) + "(&(vlSymsp->vlInst.TOP)");
+            puts(funcNameProtect(funcp, m_modp) + "(&(" + EmitCUtil::topRef() + ")");
             if (eval.firstIteration()) puts(", firstIteration");
             puts(");\n");
             puts("}\n");
@@ -522,7 +522,7 @@ class EmitCModel final : public EmitCFunc {
             puts("\nVL_ATTR_COLD void " + EmitCUtil::topClassName()
                  + "::" + eval.dumpTriggersMethod() + "() {\n");
             puts(funcNameProtect(v3Global.rootp()->dumpTriggersFuncp(eval), m_modp)
-                 + "(&(vlSymsp->vlInst.TOP));\n");
+                 + "(&(" + EmitCUtil::topRef() + "));\n");
             puts("}\n");
         }
     }
@@ -545,12 +545,12 @@ class EmitCModel final : public EmitCFunc {
         putSectionDelimiter("Events and timing");
         if (auto* const delaySchedp = v3Global.rootp()->delaySchedulerp()) {
             putns(modp, "bool " + EmitCUtil::topClassName()
-                            + "::eventsPending() { return !vlSymsp->vlInst.TOP.");
+                            + "::eventsPending() { return !" + EmitCUtil::topRefFor(delaySchedp) + ".");
             puts(varName(delaySchedp));
             puts(".empty() && !contextp()->gotFinish(); }\n\n");
 
             putns(modp, "uint64_t " + EmitCUtil::topClassName()
-                            + "::nextTimeSlot() { return vlSymsp->vlInst.TOP.");
+                            + "::nextTimeSlot() { return " + EmitCUtil::topRefFor(delaySchedp) + ".");
             puts(varName(delaySchedp));
             puts(".nextTimeSlot(); }\n");
         } else {
@@ -617,13 +617,13 @@ class EmitCModel final : public EmitCFunc {
         // Forward declaration
         if (!v3Global.opt.libCreate().empty()) {
             putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_init_root") + "("
-                            + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                            + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                             + "* tracep);\n");
         }
         putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_decl_types") + "("
                         + v3Global.opt.traceClassBase() + "* tracep);\n");
         putns(modp, "\nvoid " + topModNameProtected + "__" + protect("trace_init_top") + "("
-                        + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                        + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                         + "* tracep);\n");
 
         // Static helper function
@@ -665,7 +665,7 @@ class EmitCModel final : public EmitCFunc {
         // Forward declaration
         puts("\n");
         putns(modp, "VL_ATTR_COLD void " + topModNameProtected + "__" + protect("trace_register")
-                        + "(" + topModNameProtected + "* vlSelf, " + v3Global.opt.traceClassBase()
+                        + "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf, " + v3Global.opt.traceClassBase()
                         + "* tracep);\n");
 
         // ::traceRegisterModel
@@ -692,13 +692,13 @@ class EmitCModel final : public EmitCFunc {
         puts(/**/ "stfp->spTrace()->addModel(this);\n");
         puts(/**/ "stfp->spTrace()->addInitCb("s  //
              + "&" + protect("trace_init")  //
-             + ", &(vlSymsp->vlInst.TOP)"  //
+             + ", &(" + EmitCUtil::topRef() + ")"  //
              + ", name()"  //
              + ", " + (v3Global.opt.libCreate().empty() ? "false" : "true")  //
              + ", " + std::to_string(v3Global.rootp()->nTraceCodes())  //
              + ");\n");
         puts(/**/ topModNameProtected + "__" + protect("trace_register")
-             + "(&(vlSymsp->vlInst.TOP), stfp->spTrace());\n");
+             + "(&(" + EmitCUtil::topRef() + "), stfp->spTrace());\n");
         puts("}\n");
     }
 

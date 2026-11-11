@@ -618,6 +618,7 @@ class TimingControlVisitor final : public VNVisitor {
                                                         VBasicDTypeKwd::EVENT, VSigning::UNSIGNED};
             m_netlistp->typeTablep()->addTypesp(nbaEventDtp);
             m_netlistp->nbaEventp(m_topScopep->createTemp("__VnbaEvent", nbaEventDtp));
+            m_netlistp->nbaEventp()->varp()->libraryRoot(true);
             v3Global.setHasEvents();
         }
         return new AstEventControl{
@@ -631,6 +632,7 @@ class TimingControlVisitor final : public VNVisitor {
     AstAssign* createNbaEventTriggerAssignment(FileLine* flp) {
         if (!m_netlistp->nbaEventTriggerp()) {
             m_netlistp->nbaEventTriggerp(m_topScopep->createTemp("__VnbaEventTrigger", 1));
+            m_netlistp->nbaEventTriggerp()->varp()->libraryRoot(true);
         }
         return new AstAssign{flp,
                              new AstVarRef{flp, m_netlistp->nbaEventTriggerp(), VAccess::WRITE},

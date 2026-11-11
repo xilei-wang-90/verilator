@@ -4,6 +4,10 @@
 // SPDX-FileCopyrightText: 2026 Antmicro
 // SPDX-License-Identifier: CC0-1.0
 
+class output_group_marker;
+  static int value = 0;
+endclass
+
 module t #(
     // Enough independent statements to generate several MB of C++
     parameter int N = 12000

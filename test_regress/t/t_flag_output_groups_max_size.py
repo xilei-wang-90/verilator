@@ -55,8 +55,8 @@ test.compile(verilator_flags2=[
 
 test.execute()
 
-# Buckets would exceed the size limit, so more groups than buckets are created
-test.file_grep(classes_mk, r'vm_classes_3')
+# Buckets would exceed the size limit, so stable buckets gain a second group
+test.file_grep(classes_mk, r'vm_classes_user(?:_Slow)?_[012]_1')
 
 header_bytes = sum(os.path.getsize(f) for f in test.glob_some(test.obj_dir + "/*.h"))
 for var in VARS:

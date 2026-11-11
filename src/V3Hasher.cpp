@@ -18,6 +18,8 @@
 
 #include "V3Hasher.h"
 
+#include "V3String.h"
+
 #include <functional>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -588,6 +590,18 @@ V3Hash V3Hasher::rehash(AstNode* nodep) const {
 V3Hash V3Hasher::uncachedHash(const AstNode* nodep) {
     const HasherVisitor visitor{nodep, HasherVisitor::Uncached{}};
     return visitor.finalHash();
+}
+
+string V3Hasher::stableName(const AstNode* nodep) {
+    // A function of name() and the FileLine filename string only, not allocation-order
+    // node IDs or source locations that move when unrelated lines are added. Sixteen hex
+    // digits make an accidental collision remote. Nodes sharing both values get a
+    // V3UniqueNames multiplicity suffix, which depends on the order callers reach them.
+    VHashSha512 hash;
+    hash.insert(cvtToStr(nodep->name().size()) + ":" + nodep->name());
+    hash.insert(cvtToStr(nodep->fileline()->filename().size()) + ":"
+                + nodep->fileline()->filename());
+    return hash.digestHex().substr(0, 16);
 }
 
 //######################################################################

@@ -49,6 +49,8 @@ public:
 
     // Compute hash of node, without caching in user4.
     static V3Hash uncachedHash(const AstNode* nodep);
+    // A generated name from source identity rather than allocation-order node IDs.
+    static std::string stableName(const AstNode* nodep);
 };
 
 #endif  // Guard

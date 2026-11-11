@@ -29,6 +29,16 @@ EmitCParentModule::EmitCParentModule() {
             if (VN_IS(nodep, CFunc) || VN_IS(nodep, Var) || VN_IS(nodep, NodeCoverDecl)) {
                 nodep->user4p(modp);
             }
+            // A new class can otherwise change whether an existing class function needs
+            // a process argument. Keep class-call signatures stable while the split is active.
+            if (AstCFunc* const funcp = VN_CAST(nodep, CFunc)) {
+                if (EmitCUtil::useLibrarySplit()
+                    && (VN_IS(modp, Class) || VN_IS(modp, ClassPackage))
+                    && funcp->isProperMethod()
+                    && !funcp->isDestructor() && funcp->name() != "_ctor_var_reset"
+                    && funcp->name() != "to_string" && funcp->name() != "to_string_middle")
+                    funcp->setNeedProcess();
+            }
         }
         modp->foreach([&](AstNodeCoverDecl* nodep) { nodep->user4p(modp); });
     };
@@ -39,6 +49,47 @@ EmitCParentModule::EmitCParentModule() {
 
 //######################################################################
 // EmitCUtil implementation
+
+string EmitCUtil::cloneDefinition(const AstClass* classp) {
+    // A covergroup embedded by value keeps a back pointer to its enclosing object; a clone
+    // must not share it, so those members are reset in the copy
+    using EmbeddedCovergroupVar = std::pair<const AstClass*, const AstVar*>;
+    std::vector<EmbeddedCovergroupVar> embeddedCovergroupVars;
+    const auto hasEnclosingBackPointer = [](const AstClass* covergroupp) {
+        return covergroupp->exists([](const AstVar* const varp) {
+            const AstClassRefDType* const refp = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+            return refp && refp->rawPointer();
+        });
+    };
+    const_cast<AstClass*>(classp)->foreachMember([&](AstClass* const memberClassp,
+                                                     AstVar* const varp) {
+        const AstClassRefDType* const refp = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+        if (refp && refp->classp()->isCovergroup() && hasEnclosingBackPointer(refp->classp())) {
+            embeddedCovergroupVars.emplace_back(memberClassp, varp);
+        }
+    });
+    const string className = prefixNameProtect(classp);
+    string out = "VlClass* " + className + "::clone() const {\n";
+    out += className + "* const clonep = new " + className + "(*this);\n";
+    if (classp->hasRandVarsUpdate()) {
+        const string updateName = "__VnoInFunc___VupdateRandVars";
+        const AstCFunc* updatep = nullptr;
+        classp->exists([&](const AstCFunc* const funcp) {
+            if (funcp->name() != updateName) return false;
+            updatep = funcp;
+            return true;
+        });
+        UASSERT_OBJ(updatep, classp, "Missing updateRandVars method");
+        out += "clonep->" + updatep->nameProtect() + "("
+               + (updatep->needProcess() ? "VlProcessRef{}" : "") + ");\n";
+    }
+    for (const EmbeddedCovergroupVar& item : embeddedCovergroupVars) {
+        out += "clonep->" + prefixNameProtect(item.first) + "::" + item.second->nameProtect()
+               + " = VlNull{};\n";
+    }
+    out += "return clonep;\n}\n";
+    return out;
+}
 
 string EmitCUtil::prefixNameProtect(const AstNode* nodep) VL_MT_STABLE {
     const string prefix = v3Global.opt.modPrefix() + "_" + VIdProtect::protect(nodep->name());
@@ -102,8 +153,11 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep, bool cpp) {
             args += "void* vlVoidSelf";  // Converted to 'vlSelf' in the function body
         } else {
             if (nodep->isConst().trueKnown()) args += "const ";
-            args += EmitCUtil::prefixNameProtect(EmitCParentModule::get(nodep));
-            args += "* vlSelf";
+            const AstNodeModule* const modp = EmitCParentModule::get(nodep);
+            const bool libraryRoot = EmitCUtil::useLibrarySplit()
+                                     && modp == v3Global.rootp()->topModulep();
+            args += EmitCUtil::topSelfClassName(modp);
+            args += libraryRoot ? "* vlSelfLib" : "* vlSelf";
         }
     }
     if (nodep->needProcess()) {
@@ -112,7 +166,16 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep, bool cpp) {
     }
     if (!nodep->argTypes().empty()) {
         if (!args.empty()) args += ", ";
-        args += nodep->argTypes();
+        const string argTypes = nodep->argTypes();
+        if (EmitCUtil::useLibrarySplit()) {
+            // Class and task signatures use the library view so library overrides and
+            // callers need no user declarations. Definitions restore their local vlSymsp.
+            args += VString::replaceSubstr(
+                argTypes, EmitCUtil::symClassName() + "* __restrict vlSymsp",
+                EmitCUtil::librarySymClassName() + "* __restrict vlSymspLib");
+        } else {
+            args += argTypes;
+        }
     }
     // Might be a user function with argument list.
     for (const AstNode* const stmtp : nodep->argspList()) {
@@ -133,6 +196,8 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep, bool cpp) {
 }
 
 void EmitCBaseVisitorConst::emitCDefaultConstructor(const AstNodeModule* const modp) {
+    // A class's are declared by EmitCHeader and defaulted in its own implementation file
+    if (VN_IS(modp, Class)) return;
     puts(EmitCUtil::prefixNameProtect(modp));
     puts("() = default;\n");
 }
@@ -175,7 +240,7 @@ void EmitCBaseVisitorConst::emitCFuncDecl(const AstCFunc* funcp, const AstNodeMo
     }
     emitCFuncHeader(funcp, modp, /* withScope: */ false);
     const AstClass* const classp = VN_CAST(modp, Class);
-    if (funcp->emptyBody() && !funcp->isLoose() && !cLinkage
+    if (EmitCUtil::inlineEmptyBody(funcp) && !cLinkage
         && !(funcp->isConstructor() && classp && classp->isInterfaceClass())) {
         putns(funcp, " {}\n");
     } else {

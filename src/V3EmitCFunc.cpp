@@ -389,7 +389,16 @@ void EmitCFunc::emitCCallArgs(const AstNodeCCall* nodep, const string& selfPoint
     bool comma = false;
     if (nodep->funcp()->isLoose() && !nodep->funcp()->isStatic()) {
         UASSERT_OBJ(!selfPointer.empty(), nodep, "Call to loose method without self pointer");
-        puts(selfPointer);
+        if (EmitCUtil::useLibrarySplit() && selfPointer == "(&vlSymsp->vlInst.TOP)") {
+            puts("(&vlSymsp->TOP)");
+        } else if (EmitCUtil::useLibrarySplit()
+                   && (selfPointer == "(&vlSymsp->vlInst.TOP__uvm_pkg)"
+                       || selfPointer == "(&vlSymsp->vlInst.TOP__std)")) {
+            puts("(&static_cast<" + EmitCUtil::librarySymClassName() + "*>(vlSymsp)->"
+                 + selfPointer.substr(11, selfPointer.size() - 12) + ")");
+        } else {
+            puts(selfPointer);
+        }
         comma = true;
     }
     if (nodep->funcp()->needProcess()) {
@@ -414,6 +423,38 @@ void EmitCFunc::emitCCallArgs(const AstNodeCCall* nodep, const string& selfPoint
 
 std::string EmitCFunc::dereferenceString(const std::string& pointer) const {
     if (pointer[0] == '(' && pointer[1] == '&') {
+        static const string symsPrefix = "(&vlSymsp->";
+        if (EmitCUtil::useLibrarySplit() && VString::startsWith(pointer, symsPrefix)
+            && VString::endsWith(pointer, ")")) {
+            // The full table owns static class state. Its accessor needs no declaration
+            // added to the library symbol header when a new class appears.
+            string name = pointer.substr(symsPrefix.size(),
+                                         pointer.size() - symsPrefix.size() - 1);
+            if (name == "vlInst.TOP") return "vlSymsp->TOP.";
+            if (VString::startsWith(name, "vlInst.")) name.erase(0, 7);
+            if (VString::startsWith(name, "TOP__")) name.erase(0, 5);
+            using ModuleMap = std::unordered_map<string, const AstNodeModule*>;
+            static const ModuleMap modules = [] {
+                ModuleMap result;
+                for (const AstNodeModule* const modp : v3Global.rootp()->modulespList()) {
+                    result.emplace(EmitCUtil::prefixNameProtect(modp), modp);
+                    if (const AstClassPackage* const packagep = VN_CAST(modp, ClassPackage)) {
+                        result.emplace(EmitCUtil::prefixNameProtect(packagep->classp()), modp);
+                    }
+                }
+                return result;
+            }();
+            const string moduleName = v3Global.opt.prefix() + "_" + name;
+            const auto module = modules.find(moduleName);
+            const AstNodeModule* const modp = module == modules.end() ? nullptr : module->second;
+            const bool rootPackage = modp && VN_IS(modp, Package)
+                                     && EmitCUtil::isLibraryModule(modp);
+            const bool classPackage = modp && VN_IS(modp, ClassPackage);
+            if (!rootPackage && !classPackage) {
+                return pointer.substr(2, pointer.length() - 3) + '.';
+            }
+            return EmitCUtil::prefixNameProtect(modp) + "__Vsyms(vlSymsp).";
+        }
         // remove "address of" followed by immediate dereference
         // Note: this relies on only the form '(&OBJECT)' being used by Verilator
         return pointer.substr(2, pointer.length() - 3) + '.';

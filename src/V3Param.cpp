@@ -568,8 +568,12 @@ class ParamProcessor final {
             const auto pair = m_longMap.emplace(longname, "");
             if (pair.second) {
                 // We use all upper case above, so lower here can't conflict
-                pair.first->second
-                    = srcModp->name() + "__pi" + digestSuffix(longname, m_longSuffixes);
+                const string hex = VHashSha512{longname}.digestHex();
+                string::size_type digits = v3Global.opt.debugCollision() ? 1 : 16;
+                while (digits < hex.size() && !m_longSuffixes.insert(hex.substr(0, digits)).second) {
+                    ++digits;
+                }
+                pair.first->second = srcModp->name() + "__pi" + hex.substr(0, digits);
             }
             newname = pair.first->second;
         }

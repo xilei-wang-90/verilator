@@ -4289,6 +4289,14 @@ class RandomizeVisitor final : public VNVisitor {
     }
     static void addSetRandMode(AstNodeFTask* const ftaskp, AstVar* const genp,
                                AstVar* const randModeVarp) {
+        // Multiple randomization paths can reach the same class. Do not append the same
+        // mode-setting call twice when they do.
+        if (ftaskp->exists([&](const AstCMethodHard* const methodp) {
+                if (methodp->method() != VCMethod::CLASS_SET_RANDMODE) return false;
+                const AstVarRef* const refp = VN_CAST(methodp->pinsp(), VarRef);
+                return refp && refp->varp() == randModeVarp;
+            }))
+            return;
         FileLine* const fl = ftaskp->fileline();
         AstCMethodHard* const setRandModep = new AstCMethodHard{
             fl, new AstVarRef{fl, VN_AS(genp->user2p(), NodeModule), genp, VAccess::WRITE},

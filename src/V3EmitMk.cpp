@@ -21,6 +21,9 @@
 #include "V3EmitCBase.h"
 #include "V3HierBlock.h"
 #include "V3Os.h"
+#include "V3String.h"
+
+#include <set>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
@@ -415,6 +418,75 @@ private:
                 "More output files than input files. First extra file: " << ofIt->m_filename);
     }
 
+    static size_t stableBucket(const string& filename, size_t bucketsNum) {
+        VHashSha512 hash;
+        hash.insert(filename);
+        return std::stoul(hash.digestHex().substr(0, 8), nullptr, 16) % bucketsNum;
+    }
+
+    void buildStableOutputList() {
+        // A group's membership and name depend on its filenames, not on the number or
+        // complexity of unrelated files. Emit at the first member's input position.
+        const bool hasLibrary = std::any_of(m_inputFiles.begin(), m_inputFiles.end(),
+                                            [](const FilenameWithScore& file) {
+                                                return EmitCUtil::isLibraryFile(file.m_filename);
+                                            });
+        const int configured = v3Global.opt.outputGroups();
+        const size_t bucketsNum = hasLibrary ? configured : std::min(configured, 2);
+        std::vector<std::vector<const FilenameWithScore*>> buckets{bucketsNum};
+        for (const FilenameWithScore& file : m_inputFiles) {
+            const size_t bucket = stableBucket(file.m_filename, bucketsNum);
+            buckets[bucket].push_back(&file);
+        }
+        std::vector<bool> emitted(bucketsNum, false);
+        for (const FilenameWithScore& file : m_inputFiles) {
+            const size_t bucket = stableBucket(file.m_filename, bucketsNum);
+            if (emitted[bucket]) continue;
+            emitted[bucket] = true;
+            const std::vector<const FilenameWithScore*>& members = buckets[bucket];
+            if (members.size() == 1) {
+                m_outputFiles.push_back({file.m_filename, {}});
+                continue;
+            }
+            std::vector<std::vector<string>> groups;
+            uint64_t groupBytes = 0;
+            for (const FilenameWithScore* const memberp : members) {
+                if (groups.empty() || groupBytes + memberp->m_sizeBytes > m_maxGroupBytes) {
+                    groups.emplace_back();
+                    groupBytes = 0;
+                }
+                groupBytes += memberp->m_sizeBytes;
+                groups.back().push_back(memberp->m_filename);
+            }
+            for (size_t i = 0; i < groups.size(); ++i) {
+                std::vector<string>& group = groups[i];
+                if (group.size() == 1) {
+                    m_outputFiles.push_back({std::move(group.front()), {}});
+                    continue;
+                }
+                string name = v3Global.opt.prefix() + "_" + m_groupFilePrefix
+                              + std::to_string(bucket);
+                if (i) name += "_" + std::to_string(i);
+                m_outputFiles.push_back({std::move(name), std::move(group)});
+            }
+        }
+    }
+
+    void assertFilesComplete() const {
+        std::multiset<string> expected;
+        std::multiset<string> actual;
+        for (const FilenameWithScore& file : m_inputFiles) expected.emplace(file.m_filename);
+        for (const FileOrConcatenatedFilesList& entry : m_outputFiles) {
+            if (entry.isConcatenatingFile()) {
+                actual.insert(entry.m_concatenatedFilenames.begin(),
+                              entry.m_concatenatedFilenames.end());
+            } else {
+                actual.emplace(entry.m_filename);
+            }
+        }
+        UASSERT(expected == actual, "Stable output groups dropped or duplicated input files");
+    }
+
     void process() {
         UINFO(4, __FUNCTION__ << " group file prefix: " << m_groupFilePrefix);
         UINFO(5, "Number of input files: " << m_inputFiles.size());
@@ -424,6 +496,11 @@ private:
         UINFO(5, "Number of buckets: " << totalBucketsNum);
         UASSERT(totalBucketsNum > 0, "More than 0 buckets required");
 
+        if (EmitCUtil::useLibrarySplit()) {
+            buildStableOutputList();
+            assertFilesComplete();
+            return;
+        }
         if (fallbackNoGrouping(m_inputFiles.size())) return;
 
         if (debug() >= 6 || dumpLevel() >= 6) {
@@ -531,38 +608,91 @@ public:
         std::vector<FileOrConcatenatedFilesList> vmClassesSlowList;
         std::vector<FileOrConcatenatedFilesList> vmClassesFastList;
         if (v3Global.opt.outputGroups() > 0) {
-            std::vector<FilenameWithScore> slowFiles;
-            std::vector<FilenameWithScore> fastFiles;
-            uint64_t slowTotalScore = 0;
-            uint64_t fastTotalScore = 0;
-            // Generated headers are part of every translation unit through the precompiled header
+            std::vector<FilenameWithScore> librarySlowFiles;
+            std::vector<FilenameWithScore> libraryFastFiles;
+            std::vector<FilenameWithScore> userSlowFiles;
+            std::vector<FilenameWithScore> userFastFiles;
+            uint64_t librarySlowTotalScore = 0;
+            uint64_t libraryFastTotalScore = 0;
+            uint64_t userSlowTotalScore = 0;
+            uint64_t userFastTotalScore = 0;
+            // User groups include every generated header through the user PCH. Library groups
+            // need only the library PCH's headers and their explicit implementation dependencies.
             uint64_t headerBytes = 0;
+            std::unordered_map<string, uint64_t> headerSizes;
+            std::set<string> libraryHeaders;
 
             for (AstNodeFile* const nodep : v3Global.rootp()->filespList()) {
                 const AstCFile* const cfilep = VN_CAST(nodep, CFile);
                 if (cfilep && VString::endsWith(cfilep->name(), ".h")) {
-                    headerBytes += fileSize(cfilep);
+                    const string filename = V3Os::filenameNonDirExt(cfilep->name());
+                    const uint64_t bytes = fileSize(cfilep);
+                    headerBytes += bytes;
+                    headerSizes[filename] = bytes;
+                    if (EmitCUtil::isLibraryFile(filename) || VString::endsWith(filename, "__Vlib.h")) {
+                        libraryHeaders.insert(filename);
+                    }
                 }
                 if (cfilep && cfilep->source() && cfilep->support() == false) {
-                    std::vector<FilenameWithScore>& files = cfilep->slow() ? slowFiles : fastFiles;
-                    uint64_t& totalScore = cfilep->slow() ? slowTotalScore : fastTotalScore;
-
+                    const string filename = V3Os::filenameNonDirExt(cfilep->name());
+                    const bool library = EmitCUtil::isLibraryFile(filename);
+                    std::vector<FilenameWithScore>& files
+                        = cfilep->slow() ? (library ? librarySlowFiles : userSlowFiles)
+                                         : (library ? libraryFastFiles : userFastFiles);
+                    uint64_t& totalScore
+                        = cfilep->slow() ? (library ? librarySlowTotalScore : userSlowTotalScore)
+                                         : (library ? libraryFastTotalScore : userFastTotalScore);
                     totalScore += cfilep->complexityScore();
-                    files.push_back({V3Os::filenameNonDirExt(cfilep->name()),
-                                     cfilep->complexityScore(), fileSize(cfilep)});
+                    files.push_back({filename, cfilep->complexityScore(), fileSize(cfilep)});
                 }
             }
+            for (const AstNodeModule* const modp : v3Global.rootp()->modulespList()) {
+                if (!EmitCUtil::isLibraryModule(modp)) continue;
+                for (const AstNode* const itemp : modp->stmtspList()) {
+                    const AstCUse* const usep = VN_CAST(itemp, CUse);
+                    if (usep && usep->useType().containsAny(VUseType::IMP_INCLUDE)) {
+                        libraryHeaders.insert(EmitCUtil::prefixNameProtect(usep) + ".h");
+                    }
+                }
+            }
+            uint64_t libraryHeaderBytes = 0;
+            for (const string& name : libraryHeaders) {
+                const auto it = headerSizes.find(name);
+                if (it != headerSizes.end()) libraryHeaderBytes += it->second;
+            }
+
             // Zero size limit means unlimited
             uint64_t maxGroupBytes = std::numeric_limits<uint64_t>::max();
+            uint64_t libraryMaxGroupBytes = std::numeric_limits<uint64_t>::max();
             if (v3Global.opt.outputGroupsSize()) {
                 const uint64_t maxTuBytes = static_cast<uint64_t>(v3Global.opt.outputGroupsSize());
                 maxGroupBytes = maxTuBytes > headerBytes ? maxTuBytes - headerBytes : 0;
+                libraryMaxGroupBytes
+                    = maxTuBytes > libraryHeaderBytes ? maxTuBytes - libraryHeaderBytes : 0;
             }
 
+            // Never concatenate a library source with a user source: the group file would
+            // otherwise change whenever its user members change.
             vmClassesSlowList = EmitGroup::singleConcatenatedFilesList(
-                std::move(slowFiles), slowTotalScore, "vm_classes_Slow_", maxGroupBytes);
+                std::move(librarySlowFiles), librarySlowTotalScore, "vm_classes_library_Slow_",
+                libraryMaxGroupBytes);
             vmClassesFastList = EmitGroup::singleConcatenatedFilesList(
-                std::move(fastFiles), fastTotalScore, "vm_classes_", maxGroupBytes);
+                std::move(libraryFastFiles), libraryFastTotalScore, "vm_classes_library_",
+                libraryMaxGroupBytes);
+            std::vector<FileOrConcatenatedFilesList> userSlowList
+                = EmitGroup::singleConcatenatedFilesList(std::move(userSlowFiles),
+                                                         userSlowTotalScore, "vm_classes_user_Slow_",
+                                                         maxGroupBytes);
+            std::vector<FileOrConcatenatedFilesList> userFastList
+                = EmitGroup::singleConcatenatedFilesList(std::move(userFastFiles),
+                                                         userFastTotalScore, "vm_classes_user_",
+                                                         maxGroupBytes);
+            for (FileOrConcatenatedFilesList& entry : userSlowList) {
+                vmClassesSlowList.push_back(std::move(entry));
+            }
+            for (FileOrConcatenatedFilesList& entry : userFastList) {
+                vmClassesFastList.push_back(std::move(entry));
+            }
         }
 
         // Generate the makefile

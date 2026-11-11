@@ -51,6 +51,18 @@ public:
 
 class EmitCUtil final {
 public:
+    // Whether classp gets a polymorphic clone() (concrete: not an interface, not virtual)
+    static bool hasClone(const AstClass* classp) {
+        return !classp->isInterfaceClass() && !classp->isVirtual();
+    }
+    // Whether funcp's (empty) body is emitted inline in its header. A class's destructor
+    // never is: inline, it would instantiate its members' destructors in every file that
+    // includes the header, which needs their classes complete (see V3CUse)
+    static bool inlineEmptyBody(const AstCFunc* funcp) {
+        return funcp->emptyBody() && !funcp->isLoose() && !funcp->isDestructor();
+    }
+    // The definition of classp's clone(), for its implementation file
+    static string cloneDefinition(const AstClass* classp);
     static string voidSelfAssign(const AstNodeModule* modp) {
         const string className = prefixNameProtect(modp);
         return className + "* const __restrict vlSelf VL_ATTR_UNUSED = static_cast<" + className
@@ -60,9 +72,64 @@ public:
     static string symClassName() VL_MT_STABLE {
         return v3Global.opt.prefix() + "_" + VIdProtect::protect("_Syms");
     }
+    // Class designs get a library-only view of the symbol table and root. UVM and std
+    // implementation files use it so user declarations cannot invalidate their inputs.
+    static bool useLibrarySplit() VL_MT_STABLE { return v3Global.hasClasses(); }
+    static string libraryPchClassName() VL_MT_STABLE { return pchClassName() + "__Vlib"; }
+    static string librarySymClassName() VL_MT_STABLE { return symClassName() + "__Vlib"; }
+    static string symClassNameFor(const AstNodeModule* modp) VL_MT_STABLE {
+        return isLibraryModule(modp) ? librarySymClassName() : symClassName();
+    }
+    static string libraryRootClassName() VL_MT_STABLE {
+        return prefixNameProtect(v3Global.rootp()->topModulep()) + "__Vlib";
+    }
+    static string topSelfClassName(const AstNodeModule* modp) VL_MT_STABLE {
+        return useLibrarySplit() && modp == v3Global.rootp()->topModulep()
+                   ? libraryRootClassName()
+                   : prefixNameProtect(modp);
+    }
+    static string topRef() VL_MT_STABLE {
+        return useLibrarySplit() ? "vlSymsp->TOP" : "vlSymsp->vlInst.TOP";
+    }
+    // Root expression for varp, using the library base for shared scheduler state.
+    static string topRefFor(const AstVar* varp) VL_MT_STABLE {
+        const string ref = topRef();
+        return useLibrarySplit() && isLibraryRootVar(varp)
+                   ? "static_cast<" + libraryRootClassName() + "&>(" + ref + ")"
+                   : ref;
+    }
+    static bool isLibraryFile(const string& name) VL_MT_STABLE {
+        if (!useLibrarySplit()) return false;
+        for (const char* const library : {"uvm_pkg", "std"}) {
+            const string stem = v3Global.opt.prefix() + "_" + library;
+            // The __ suffix covers both class scopes (__03a__03a) and a package's
+            // numbered or Slow implementation splits.
+            if (name == stem || VString::startsWith(name, stem + "__")) return true;
+        }
+        return false;
+    }
+    static bool isLibraryModule(const AstNodeModule* modp) VL_MT_STABLE {
+        if (VN_IS(modp, Class) || VN_IS(modp, ClassPackage)) return modp->librarySplit();
+        return VN_IS(modp, Package)
+               && (modp == v3Global.rootp()->stdPackagep() || modp->name() == "uvm_pkg");
+    }
+    static bool isLibraryScopeName(const string& name) VL_MT_STABLE {
+        return name == "uvm_pkg" || name == "std"
+               || VString::startsWith(name, "uvm_pkg__")
+               || VString::startsWith(name, "std__");
+    }
+    static bool isLibraryRootVar(const AstVar* varp) VL_MT_SAFE {
+        const AstBasicDType* const basicp = varp->basicp();
+        if (basicp
+            && (basicp->isDelayScheduler() || basicp->isTriggerScheduler()
+                || basicp->isDynamicTriggerScheduler()))
+            return true;
+        return varp->libraryRoot();
+    }
     static string symClassVar() { return symClassName() + "* __restrict vlSymsp"; }
-    static string symClassAssign() {
-        return symClassName() + "* const __restrict vlSymsp VL_ATTR_UNUSED = vlSelf->vlSymsp;\n";
+    static string symClassAssign(const AstNodeModule* modp = nullptr) {
+        const string symName = modp ? symClassNameFor(modp) : symClassName();
+        return symName + "* const __restrict vlSymsp VL_ATTR_UNUSED = vlSelf->vlSymsp;\n";
     }
     static string topClassName() VL_MT_SAFE {  // Return name of top wrapper module
         return v3Global.opt.prefix();

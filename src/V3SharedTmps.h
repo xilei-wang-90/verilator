@@ -92,7 +92,7 @@ class V3SharedTmps final {
     const std::string m_prefix;  // Prefix of all variable names
     const VVarType m_varType;  // Type of all variables
     V3HashMap<Key, Tmps, KeyHash, KeyEqual> m_tmps;  // The temporaries created so far
-    size_t m_nVars = 0;  // Number of variables created, used to make unique names
+    std::unordered_map<const AstNodeModule*, size_t> m_nVars;  // Per-module unique names
     size_t m_nReused = 0;  // Number of temporaries using an existing variable
 
 public:
@@ -123,7 +123,7 @@ public:
         } else {
             std::string uniqueName = m_prefix + "_";
             if (!name.empty()) uniqueName += name + "_";
-            uniqueName += std::to_string(m_nVars++);
+            uniqueName += std::to_string(m_nVars[modp]++);
             AstVar* const varp = new AstVar{flp, m_varType, uniqueName, dtypep};
             scopep->modp()->addStmtsp(varp);
             tmps.m_varps.emplace_back(varp);

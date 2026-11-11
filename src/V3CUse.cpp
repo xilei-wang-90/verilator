@@ -41,6 +41,7 @@ class CUseVisitor final : public VNVisitorConst {
     // MEMBERS
     AstNodeModule* const m_modp;  // Current module
     std::map<std::string, std::pair<FileLine*, VUseType>> m_didUse;  // What we already used
+    std::unordered_map<const AstNode*, const AstNodeModule*> m_owner;  // ownerOf() memo
 
     // METHODS
     void addNewUse(const AstNode* nodep, VUseType useType, const string& name) {
@@ -51,15 +52,62 @@ class CUseVisitor final : public VNVisitorConst {
     }
 
     // VISITORS
-    void visit(AstClassRefDType* nodep) override {
-        addNewUse(nodep, VUseType::INT_FWD_CLASS, nodep->classp()->name());
+    const AstNodeModule* ownerOf(const AstNode* nodep) {
+        // The module a node is defined in. Memoize every node the walk passes, so a
+        // module's lookups together walk its sibling list once.
+        std::vector<const AstNode*> passed;
+        const AstNodeModule* ownerp = nullptr;
+        for (; nodep; nodep = nodep->backp()) {
+            const auto it = m_owner.find(nodep);
+            if (it != m_owner.end()) {
+                ownerp = it->second;
+                break;
+            }
+            passed.push_back(nodep);
+            if (const AstNodeModule* const modp = VN_CAST(nodep, NodeModule)) {
+                ownerp = modp;
+                break;
+            }
+        }
+        for (const AstNode* const passedp : passed) m_owner.emplace(passedp, ownerp);
+        return ownerp;
+    }
+    void addClassUse(const AstNode* nodep, const AstClass* classp) {
+        // A class's declaration: forward for headers; its own header for the module's
+        // implementation, which no longer gets every class through __Syms.h
+        addNewUse(nodep, VUseType::INT_FWD_CLASS, classp->name());
+        addNewUse(nodep, VUseType::IMP_INCLUDE, classp->name());
+    }
+    void visit(AstClassRefDType* nodep) override { addClassUse(nodep, nodep->classp()); }
+    void visit(AstVarRef* nodep) override {
+        if (const AstClassPackage* const packagep = VN_CAST(ownerOf(nodep->varp()), ClassPackage)) {
+            addNewUse(nodep, VUseType::IMP_INCLUDE, packagep->name());
+        }
+        iterateChildrenConst(nodep);
     }
     void visit(AstCFunc* nodep) override {
         if (nodep->user1SetOnce()) return;
         iterateAndNextConstNull(nodep->argsp());
         iterateAndNextConstNull(nodep->stmtsp());
     }
-    void visit(AstCCall* /*nodep*/) override {}
+    void visit(AstNodeCCall* nodep) override {
+        // A call into a class's method needs that class's header, and the classes of the
+        // callee's parameters: an argument it is passed (VlNull{} for a handle) is converted
+        // to the parameter's type here. The callee's body is its own module's business.
+        if (nodep->user1SetOnce()) return;
+        if (const AstCFunc* const funcp = nodep->funcp()) {
+            if (const AstClass* const classp = VN_CAST(ownerOf(funcp), Class)) {
+                addClassUse(nodep, classp);
+            } else if (const AstClassPackage* const packagep = VN_CAST(ownerOf(funcp), ClassPackage)) {
+                addNewUse(nodep, VUseType::IMP_INCLUDE, packagep->name());
+            }
+            for (const AstNode* argp = funcp->argsp(); argp; argp = argp->nextp()) {
+                if (argp->dtypep()) iterateConst(argp->dtypep());
+            }
+        }
+        if (nodep->dtypep()) iterateConst(nodep->dtypep());
+        iterateChildrenConst(nodep);
+    }
     void visit(AstCReturn* nodep) override {
         UASSERT_OBJ(!nodep->user1SetOnce(), nodep, "Visited same return twice");
         iterateConst(nodep->lhsp()->dtypep());
@@ -68,6 +116,12 @@ class CUseVisitor final : public VNVisitorConst {
         if (nodep->user1SetOnce()) return;  // Process once
         if (nodep->virtRefDTypep()) iterateConst(nodep->virtRefDTypep());
         if (nodep->virtRefDType2p()) iterateConst(nodep->virtRefDType2p());
+        // Through a typedef, and into an element type, to find the classes a container
+        // holds (VlAssocArray<..., VlClassRef<C>> needs C declared where it's used)
+        if (AstNodeDType* const skippedp = nodep->skipRefp()) {
+            if (skippedp != nodep) iterateConst(skippedp);
+        }
+        if (AstNodeDType* const subp = nodep->subDTypep()) iterateConst(subp);
 
         // Add a CUse for every struct that requires a declaration
         AstNodeUOrStructDType* const stypep = VN_CAST(nodep->skipRefp(), NodeUOrStructDType);
@@ -76,7 +130,7 @@ class CUseVisitor final : public VNVisitorConst {
             iterateChildrenConst(stypep);
         } else if (const AstClassRefDType* const classp
                    = VN_CAST(nodep->skipRefp(), ClassRefDType)) {
-            addNewUse(nodep, VUseType::INT_FWD_CLASS, classp->name());
+            addClassUse(nodep, classp->classp());
         } else if (const AstIfaceRefDType* const ifacep
                    = VN_CAST(nodep->skipRefp(), IfaceRefDType)) {
             addNewUse(nodep, VUseType::INT_FWD_CLASS, ifacep->ifaceViaCellp()->name());
@@ -100,6 +154,15 @@ public:
     explicit CUseVisitor(AstNodeModule* modp)
         : m_modp{modp} {
         iterateConst(modp);
+        if (AstClass* const classp = VN_CAST(modp, Class)) {
+            // clone() resets the class's embedded covergroups, inherited ones included
+            // (EmitCUtil::cloneDefinition), so it needs their classes too
+            classp->foreachMember([&](AstClass*, AstVar* varp) {
+                const AstClassRefDType* const refp
+                    = VN_CAST(varp->dtypep()->skipRefp(), ClassRefDType);
+                if (refp && refp->classp()->isCovergroup()) addClassUse(varp, refp->classp());
+            });
+        }
 
         for (const auto& used : m_didUse) {
             AstCUse* const newp = new AstCUse{used.second.first, used.second.second, used.first};

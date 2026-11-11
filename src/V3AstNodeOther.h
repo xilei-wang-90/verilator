@@ -355,6 +355,7 @@ class AstNodeModule VL_NOT_FINAL : public AstNode {
                                        // set by V3Param::deepCloneModule. Suppresses
                                        // width/type errors on the unresolved template.
     bool m_verilatorLib : 1;  // Module is a stub for a Verilator produced --lib-create
+    bool m_librarySplit : 1;  // Class belongs to the actual UVM or std package in split output
 protected:
     AstNodeModule(VNType t, FileLine* fl, const string& name, const string& libname)
         : AstNode{t, fl}
@@ -373,7 +374,8 @@ protected:
         , m_recursive{false}
         , m_recursiveClone{false}
         , m_parameterizedTemplate{false}
-        , m_verilatorLib{false} {}
+        , m_verilatorLib{false}
+        , m_librarySplit{false} {}
 
 public:
     ASTGEN_MEMBERS_AstNodeModule;
@@ -427,6 +429,8 @@ public:
     void parameterizedTemplate(bool flag) { m_parameterizedTemplate = flag; }
     void verilatorLib(bool flag) { m_verilatorLib = flag; }
     bool verilatorLib() const { return m_verilatorLib; }
+    void librarySplit(bool flag) { m_librarySplit = flag; }
+    bool librarySplit() const { return m_librarySplit; }
     VLifetime lifetime() const { return m_lifetime; }
     void lifetime(const VLifetime& flag) { m_lifetime = flag; }
     VTimescale timeunit() const { return m_timeunit; }
@@ -2371,6 +2375,7 @@ class AstVar final : public AstNode {
     bool m_isStdRandomizeArg : 1;  // Argument variable created for std::randomize (__Varg*)
     bool m_processQueue : 1;  // Process queue variable
     bool m_mtaskCacheLineAlign : 1;  // Start MTask affinity group on a cache line
+    bool m_libraryRoot : 1;  // Shared with library classes through the library root base
     void init() {
         m_libInoutEnable = false;
         m_ansi = false;
@@ -2438,6 +2443,7 @@ class AstVar final : public AstNode {
         m_isStdRandomizeArg = false;
         m_processQueue = false;
         m_mtaskCacheLineAlign = false;
+        m_libraryRoot = false;
     }
 
 public:
@@ -2676,6 +2682,8 @@ public:
     bool isIfaceParent() const { return m_isIfaceParent; }
     bool isIfaceArraySplit() const { return m_isIfaceArraySplit; }
     bool isInternal() const { return m_isInternal; }
+    bool libraryRoot() const { return m_libraryRoot; }
+    void libraryRoot(bool flag) { m_libraryRoot = flag; }
     bool isIfaceParam() const { return m_isIfaceParam; }
     bool isSignal() const { return varType().isSignal(); }
     bool isNet() const { return varType().isNet(); }

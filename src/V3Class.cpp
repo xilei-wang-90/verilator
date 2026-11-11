@@ -74,6 +74,10 @@ class ClassVisitor final : public VNVisitor {
 
     void visit(AstClass* nodep) override {
         if (nodep->user1SetOnce()) return;
+        const bool library = VN_IS(m_modp, Package)
+                             && (m_modp == v3Global.rootp()->stdPackagep()
+                                 || m_modp->name() == "uvm_pkg");
+        nodep->librarySplit(library);
         // Move this class
         nodep->name(m_prefix + nodep->name());
         nodep->unlinkFrBack();
@@ -84,6 +88,7 @@ class ClassVisitor final : public VNVisitor {
         AstClassPackage* const packagep
             = new AstClassPackage{nodep->fileline(), nodep->origName(), nodep->libname()};
         packagep->name(nodep->name() + "__Vclpkg");
+        packagep->librarySplit(library);
         nodep->editCountInc();
         nodep->classOrPackagep(packagep);
         packagep->classp(nodep);

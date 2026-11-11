@@ -26,8 +26,10 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 class EmitCPch final : public EmitCBaseVisitorConst {
     // METHODS
 
-    void emitPch() {
-        openNewOutputHeaderFile(EmitCUtil::pchClassName(), "Precompiled header");
+    void emitPch(bool library) {
+        openNewOutputHeaderFile(library ? EmitCUtil::libraryPchClassName()
+                                        : EmitCUtil::pchClassName(),
+                                "Precompiled header");
         puts("//\n");
         puts("// Internal details; most user sources do not need this header,\n");
         puts("// unless using verilator public meta comments.\n");
@@ -37,20 +39,24 @@ class EmitCPch final : public EmitCBaseVisitorConst {
 
         puts("\n");
         puts("// GCC and Clang only will precompile headers (PCH) for the first header.\n");
-        puts("// So, make sure this is the one and only PCH.\n");
+        puts("// Without a library split, this must be the one and only PCH.\n");
         puts("// If multiple module's includes are needed, use individual includes.\n");
-        puts("#ifdef VL_PCH_INCLUDED\n");
-        puts("# error \"Including multiple precompiled header files\"\n");
-        puts("#endif\n");
-        puts("#define VL_PCH_INCLUDED\n");
+        if (!EmitCUtil::useLibrarySplit()) {
+            puts("#ifdef VL_PCH_INCLUDED\n");
+            puts("# error \"Including multiple precompiled header files\"\n");
+            puts("#endif\n");
+            puts("#define VL_PCH_INCLUDED\n");
+        }
 
         puts("\n");
         puts("\n#include \"verilated.h\"\n");
         if (v3Global.dpi()) puts("#include \"verilated_dpi.h\"\n");
 
         puts("\n");
-        puts("#include \"" + EmitCUtil::symClassName() + ".h\"\n");
-        puts("#include \"" + EmitCUtil::topClassName() + ".h\"\n");
+        puts("#include \"" + (library ? EmitCUtil::librarySymClassName()
+                                      : EmitCUtil::symClassName())
+             + ".h\"\n");
+        if (!library) puts("#include \"" + EmitCUtil::topClassName() + ".h\"\n");
 
         puts("\n// Additional include files added using '--compiler-include'\n");
         for (const string& filename : v3Global.opt.compilerIncludes()) {
@@ -66,7 +72,10 @@ class EmitCPch final : public EmitCBaseVisitorConst {
     void visit(AstNode* nodep) override { nodep->v3fatalSrc("Unused"); }
 
 public:
-    explicit EmitCPch() { emitPch(); }
+    explicit EmitCPch() {
+        if (EmitCUtil::useLibrarySplit()) emitPch(true);
+        emitPch(false);
+    }
 };
 
 //######################################################################

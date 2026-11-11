@@ -53,10 +53,34 @@ class EmitCImp final : public EmitCFunc {
     void emitFileHeader() {
         puts("// See " + EmitCUtil::topClassName() + ".h for the primary calling header\n");
         puts("\n");
-        puts("#include \"" + EmitCUtil::pchClassName() + ".h\"\n");
+        puts("#include \"" + (EmitCUtil::isLibraryModule(m_fileModp)
+                                  ? EmitCUtil::libraryPchClassName() : EmitCUtil::pchClassName())
+                 + ".h\"\n");
+        emitClassIncludes();
         emitSystemCSection(m_fileModp, VSystemCSectionType::IMP_HDR);
         // Need to emit new lazy declarations
         m_lazyDecls.reset();
+    }
+
+    void emitClassIncludes() {
+        // __Syms.h, through the precompiled header, has each class package's static part
+        // only; the classes this module's code uses come from their own headers
+        // (VUseType::IMP_INCLUDE), the class itself first when this is a class package
+        std::set<std::string> names;
+        const AstNodeModule* const classp = VN_IS(m_fileModp, ClassPackage)
+                                                ? VN_AS(m_fileModp, ClassPackage)->classp()
+                                                : nullptr;
+        if (classp) puts("#include \"" + EmitCUtil::prefixNameProtect(classp) + ".h\"\n");
+        for (const AstNodeModule* modp : {m_fileModp, classp}) {
+            if (!modp) continue;
+            for (const AstNode* itemp = modp->stmtsp(); itemp; itemp = itemp->nextp()) {
+                const AstCUse* const usep = VN_CAST(itemp, CUse);
+                if (usep && usep->useType().containsAny(VUseType::IMP_INCLUDE))
+                    names.insert(EmitCUtil::prefixNameProtect(usep));
+            }
+        }
+        if (classp) names.erase(EmitCUtil::prefixNameProtect(classp));
+        for (const std::string& name : names) puts("#include \"" + name + ".h\"\n");
     }
 
     void emitParamDefns(const AstNodeModule* modp) {
@@ -124,10 +148,12 @@ class EmitCImp final : public EmitCFunc {
     // Gather the statements constructing/destroying members in anonymous unions, and split
     // them into sub-functions if needed. As this emits files, no output file can be open.
     void createCtorDtorStmts(const AstNodeModule* modp) {
+        const bool splitRoot = EmitCUtil::useLibrarySplit() && modp->isTop();
         // Construct member variables
         for (const AstNode* const nodep : modp->stmtspList()) {
             const AstVar* const varp = VN_CAST(nodep, Var);
-            if (varp && isExplicitlyConstructed(varp)) {
+            if (varp && !(splitRoot && EmitCUtil::isLibraryRootVar(varp))
+                && isExplicitlyConstructed(varp)) {
                 addVarCtorDtorStmts(m_ctorStmts, varp, false);
             }
         }
@@ -136,7 +162,8 @@ class EmitCImp final : public EmitCFunc {
         const AstNode* const lastp = modp->stmtsp() ? modp->stmtsp()->lastp() : nullptr;
         for (const AstNode* nodep = lastp; nodep; nodep = nodep->prevp()) {
             const AstVar* const varp = VN_CAST(nodep, Var);
-            if (varp && isExplicitlyConstructed(varp)) {
+            if (varp && !(splitRoot && EmitCUtil::isLibraryRootVar(varp))
+                && isExplicitlyConstructed(varp)) {
                 addVarCtorDtorStmts(m_dtorStmts, varp, true);
             }
         }
@@ -149,15 +176,17 @@ class EmitCImp final : public EmitCFunc {
     }
     void emitCtorDtorImp(const AstNodeModule* modp) {
         const std::string modName = EmitCUtil::prefixNameProtect(modp);
+        const bool splitRoot = EmitCUtil::useLibrarySplit() && modp->isTop();
+        const string symName = EmitCUtil::symClassNameFor(modp);
 
         // ctor
         if (modp->ctorVarReset()) {
             m_lazyDecls.emit("\nvoid " + modName + "__", protect("_ctor_var_reset"),
-                             "(" + modName + "* vlSelf);\n");
+                             "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf);\n");
         }
 
         if (!m_ctorSplitDecl.empty()) puts("\n" + m_ctorSplitDecl + "\n");
-        puts("\nvoid " + modName + "__ctor(" + modName + "* vlSelf, " + EmitCUtil::symClassName()
+        puts("\nvoid " + modName + "__ctor(" + modName + "* vlSelf, " + symName
              + "* symsp, const char* namep) {\n");
         puts("vlSelf->vlSymsp = symsp;\n");
         puts("vlSelf->vlNamep = strdup(namep);\n");
@@ -171,8 +200,25 @@ class EmitCImp final : public EmitCFunc {
         puts("}\n");
 
         // C++ constructor
-        puts("\n" + modName + "::" + modName + "(" + EmitCUtil::symClassName()
-             + "* symsp, const char* namep) {\n");
+        if (splitRoot) {
+            const string libraryRoot = EmitCUtil::libraryRootClassName();
+            puts("\n" + libraryRoot + "::" + libraryRoot + "("
+                 + EmitCUtil::librarySymClassName() + "* symsp, const char* namep)");
+            const char* baseSepp = "\n    : ";
+            for (const AstNode* const nodep : modp->stmtspList()) {
+                const AstVar* const varp = VN_CAST(nodep, Var);
+                if (varp && varp->basicp() && varp->basicp()->isDelayScheduler()) {
+                    puts(baseSepp);
+                    putns(varp, "__Vnontrivs");
+                    puts("{symsp->_vm_contextp__}");
+                    baseSepp = ", ";
+                }
+            }
+            puts(" {\n(void)symsp;\n(void)namep;\n}\n");
+        }
+        puts("\n" + modName + "::" + modName + "(" + symName + "* symsp, const char* namep)");
+        if (splitRoot) puts("\n    : " + EmitCUtil::libraryRootClassName() + "{symsp, namep}");
+        puts(" {\n");
         puts(modName + "__ctor(this, symsp, namep);\n");
         emitSystemCSection(modp, VSystemCSectionType::CTOR);
         puts("}\n");
@@ -199,7 +245,7 @@ class EmitCImp final : public EmitCFunc {
         if (v3Global.opt.coverage()) {
             puts("\n");
             m_lazyDecls.emit("void " + modName + "__", protect("_configure_coverage"),
-                             "(" + modName + "* vlSelf, bool first);");
+                             "(" + EmitCUtil::topSelfClassName(modp) + "* vlSelf, bool first);");
         }
 
         if (v3Global.opt.coverage()) {
@@ -403,6 +449,18 @@ class EmitCImp final : public EmitCFunc {
                 emitCoverageImp();
             }
             emitSavableImp(modp);
+            if (const AstClass* const classp = VN_CAST(modp, Class)) {
+                // Declared by EmitCHeader::emitInternalMethodDecls
+                const std::string className = EmitCUtil::prefixNameProtect(classp);
+                puts("\n");
+                putns(classp, className + "::" + className + "() = default;\n");
+                putns(classp, className + "::" + className + "(const " + className
+                                  + "&) = default;\n");
+                if (EmitCUtil::hasClone(classp)) {
+                    puts("\n");
+                    putns(classp, EmitCUtil::cloneDefinition(classp));
+                }
+            }
         } else {
             // From `systemc_implementation
             emitSystemCSection(modp, VSystemCSectionType::IMP);
