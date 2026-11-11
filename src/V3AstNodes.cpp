@@ -4096,12 +4096,14 @@ void AstTracePushPrefix::dump(std::ostream& str) const {
     if (m_quotedPrefix) str << " [QUOTE]";
     if (left() || right()) str << " [" << left() << ":" << right() << "]";
     if (prefix() != "") str << " prefix=" << prefix();
+    if (component() != "") str << " component=" << component();
     str << " [" << prefixType().ascii() << "]";
 }
 void AstTracePushPrefix::dumpJson(std::ostream& str) const {
     dumpJsonBoolFuncIf(str, quotedPrefix);
     dumpJsonStr(str, "prefixType", prefixType().ascii());
     dumpJsonStr(str, "prefix", prefix());
+    if (component() != "") dumpJsonStr(str, "component", component());
     dumpJsonNumFunc(str, left);
     dumpJsonNumFunc(str, right);
     dumpJsonGen(str);

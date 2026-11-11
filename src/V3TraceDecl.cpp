@@ -51,13 +51,35 @@ class PathAdjustor final {
     FileLine* const m_flp;  // FileLine used for created nodes
     std::function<void(AstNodeStmt*)> m_emit;  // Function called with adjustment statements
     std::vector<std::string> m_stack{""};  // Stack of current paths
+    // Module name of each inlined instance, by path ("a b "), to record with its scope
+    const std::unordered_map<std::string, std::string>& m_modules;
 
     static constexpr char SEPARATOR = ' ';
 
+    // The prefix for one path element, with the module name of the scope it names, if known
+    AstTracePushPrefix* push(const string& name, VTracePrefixType type, const string& path,
+                             AstCell* cellp, AstVarScope* vscp) {
+        AstTracePushPrefix* const pushp = new AstTracePushPrefix{m_flp, name, type};
+        const AstIfaceRefDType* const ifaceRefp
+            = vscp ? VN_CAST(vscp->dtypep()->skipRefp(), IfaceRefDType) : nullptr;
+        if (cellp) {
+            pushp->component(cellp->modp()->origName());
+        } else if (ifaceRefp) {  // An interface instance, traced through its reference
+            const AstIface* const ifacep = ifaceRefp->ifaceViaCellp();
+            pushp->component(ifacep ? ifacep->origName() : ifaceRefp->ifaceName());
+        } else {
+            const auto it = m_modules.find(path);
+            if (it != m_modules.end()) pushp->component(it->second);
+        }
+        return pushp;
+    }
+
 public:
-    explicit PathAdjustor(FileLine* flp, std::function<void(AstNodeStmt*)> emit)
+    explicit PathAdjustor(FileLine* flp, std::function<void(AstNodeStmt*)> emit,
+                          const std::unordered_map<std::string, std::string>& modules)
         : m_flp{flp}
-        , m_emit{emit} {}
+        , m_emit{emit}
+        , m_modules{modules} {}
 
     // Emit Prefix adjustments until the current path is 'newPath'
     void adjust(const string& newPath, AstCell* cellp, AstVarScope* vscp) {
@@ -82,12 +104,13 @@ public:
             const size_t end = extraPrefix.find(SEPARATOR, begin);
             if (end == string::npos) break;
             const string& extra = extraPrefix.substr(begin, end - begin);
+            const string path = m_stack.back() + extra + SEPARATOR;
             if (end == last) {
-                m_emit(new AstTracePushPrefix{m_flp, extra, lastScopeType});
+                m_emit(push(extra, lastScopeType, path, cellp, vscp));
             } else {
-                m_emit(new AstTracePushPrefix{m_flp, extra, VTracePrefixType::SCOPE_MODULE});
+                m_emit(push(extra, VTracePrefixType::SCOPE_MODULE, path, nullptr, nullptr));
             }
-            m_stack.push_back(m_stack.back() + extra + SEPARATOR);
+            m_stack.push_back(path);
             begin = end + 1;
         }
         UASSERT(begin == extraPrefix.size(), "Should have consumed all of extraPrefix");
@@ -175,7 +198,7 @@ class TraceDeclVisitor final : public VNVisitor {
             // Compute path in hierarchy and item name
             const std::string& vcdName = AstNode::vcdName(name);
             AstVar* const varp = VN_CAST(nodep, Var);
-            if (VN_IS(nodep, Cell) || VN_IS(varp->dtypep(), IfaceRefDType)) {
+            if (!varp || VN_IS(varp->dtypep(), IfaceRefDType)) {
                 // Cell or interface reference
                 m_path = vcdName + " ";
                 m_name.clear();
@@ -220,6 +243,10 @@ class TraceDeclVisitor final : public VNVisitor {
         explicit TraceEntry(const AstScope* scopep, AstCell* cellp)
             : m_cellp{cellp} {
             init(cellp->name(), cellp, scopep->isTop());
+        }
+        // Only for its path(): an inlined instance has no entry of its own
+        explicit TraceEntry(const AstScope* scopep, AstCellInlineScope* inlinep) {
+            init(inlinep->name(), inlinep, scopep->isTop());
         }
         int operatorCompare(const TraceEntry& b) const {
             if (const int cmp = path().compare(b.path())) return cmp < 0;
@@ -654,8 +681,16 @@ class TraceDeclVisitor final : public VNVisitor {
                 m_entries.begin(), m_entries.end(),
                 [](const TraceEntry& a, const TraceEntry& b) { return a.operatorCompare(b); });
 
+            // The module of each instance inlined into this scope (named blocks have none)
+            std::unordered_map<std::string, std::string> modules;
+            for (AstNode* inp = nodep->inlinesp(); inp; inp = inp->nextp()) {
+                AstCellInlineScope* const inlinep = VN_AS(inp, CellInlineScope);
+                if (VString::startsWith(inlinep->origModName(), "__")) continue;  // __BEGIN__
+                modules.emplace(TraceEntry{nodep, inlinep}.path(), inlinep->origModName());
+            }
             FileLine* const flp = nodep->fileline();
-            PathAdjustor pathAdjustor{flp, [&](AstNodeStmt* stmtp) { addToSubFunc(stmtp); }};
+            PathAdjustor pathAdjustor{flp, [&](AstNodeStmt* stmtp) { addToSubFunc(stmtp); },
+                                      modules};
             const bool splitRootPrimaryIos = nodep->isTop() && !v3Global.opt.libCreate().empty();
             const auto emitEntry = [&](const TraceEntry& entry) {
                 AstVarScope* const vscp = entry.vscp();

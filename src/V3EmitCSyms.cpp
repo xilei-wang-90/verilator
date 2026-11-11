@@ -993,6 +993,8 @@ class EmitCSyms final : EmitCBaseVisitorConst {
         iterateChildrenConst(nodep);
     }
     void visit(AstCellInlineScope* nodep) override {
+        // Kept for tracing too (V3Inline, V3Scope); only VPI gets a symbol table entry
+        if (!v3Global.opt.vpi()) return;
         const std::string type = (nodep->origModName() == "__BEGIN__") ? "SCOPE_OTHER"  //
                                                                        : "SCOPE_MODULE";
         const std::string name = m_scopep->shortName() + "__DOT__" + nodep->name();

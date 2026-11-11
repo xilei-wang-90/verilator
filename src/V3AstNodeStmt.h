@@ -1437,6 +1437,7 @@ class AstTracePushPrefix final : public AstNodeStmt {
     const int m_left;  // Array left index, or struct/union member count
     const int m_right;  // Array right index
     const bool m_quotedPrefix;  // Quote prefix name
+    string m_component;  // Module (definition) name of a module or interface scope, or empty
 public:
     AstTracePushPrefix(FileLine* fl, const string& prefix, VTracePrefixType prefixType,
                        int left = 0, int right = 0, bool quotedPrefix = true)
@@ -1455,6 +1456,8 @@ public:
     int left() const { return m_left; }
     int right() const { return m_right; }
     bool quotedPrefix() const { return m_quotedPrefix; }
+    string component() const { return m_component; }
+    void component(const string& name) { m_component = name; }
 };
 class AstWait final : public AstNodeStmt {
     // @astgen op1 := condp : AstNodeExpr

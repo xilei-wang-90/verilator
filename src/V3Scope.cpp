@@ -240,7 +240,8 @@ class ScopeVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
     void visit(AstCellInline* nodep) override {  //
-        if (!v3Global.opt.vpi()) return;
+        // Trace declarations name each inlined scope's module (V3TraceDecl)
+        if (!v3Global.opt.vpi() && !v3Global.opt.trace()) return;
         m_scopep->addInlinesp(
             new AstCellInlineScope{nodep->fileline(), nodep->name(), nodep->origModName()});
     }

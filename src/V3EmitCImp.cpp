@@ -921,7 +921,8 @@ class EmitCTrace final : public EmitCFunc {
         EmitCFunc::visit(nodep);
     }
     void visit(AstTracePushPrefix* nodep) override {
-        putns(nodep, "VL_TRACE_PUSH_PREFIX(tracep, ");
+        const bool component = !nodep->component().empty();
+        putns(nodep, component ? "VL_TRACE_PUSH_PREFIX_COMPONENT(tracep, " : "VL_TRACE_PUSH_PREFIX(tracep, ");
         if (nodep->quotedPrefix()) {
             putsQuoted(VIdProtect::protectWordsIf(nodep->prefix(), nodep->protect()));
         } else {
@@ -931,6 +932,10 @@ class EmitCTrace final : public EmitCFunc {
         puts(nodep->prefixType().ascii());
         puts(", " + std::to_string(nodep->left()));
         puts(", " + std::to_string(nodep->right()));
+        if (component) {
+            puts(", ");
+            putsQuoted(VIdProtect::protectWordsIf(nodep->component(), nodep->protect()));
+        }
         puts(");\n");
     }
     void visit(AstTracePopPrefix* nodep) override {  //

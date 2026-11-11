@@ -462,7 +462,8 @@ void inlineScope(AstScope* scopep, AstCell* cellp, const std::string& prefix,
         parentScopep->addInlinesp(cisp);
     }
     // ... and add one for the instance we are inlining now
-    if (v3Global.opt.vpi()) {
+    // Trace declarations name each inlined scope's module (V3TraceDecl)
+    if (v3Global.opt.vpi() || v3Global.opt.trace()) {
         parentScopep->addInlinesp(
             new AstCellInlineScope{cellp->fileline(), cellp->name(), cellp->modp()->origName()});
     }

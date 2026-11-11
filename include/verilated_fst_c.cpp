@@ -142,7 +142,7 @@ void VerilatedFst::declDTypeEnum(int dtypenum, const char* name, uint32_t elemen
 }
 
 void VerilatedFst::pushPrefix(const char* namep, VerilatedTracePrefixType type, int left,
-                              int right) {
+                              int right, const char* componentp) {
     assert(!m_prefixStack.empty());  // Constructor makes an empty entry
     const std::string name{namep};
     // An empty name means this is the root of a model created with
@@ -178,10 +178,10 @@ void VerilatedFst::pushPrefix(const char* namep, VerilatedTracePrefixType type, 
 
     switch (type) {
     case VerilatedTracePrefixType::SCOPE_MODULE:
-        m_fst->setScope(fst::Hierarchy::ScopeType::VCD_MODULE, name, std::string{});
+        m_fst->setScope(fst::Hierarchy::ScopeType::VCD_MODULE, name, std::string{componentp});
         break;
     case VerilatedTracePrefixType::SCOPE_INTERFACE:
-        m_fst->setScope(fst::Hierarchy::ScopeType::VCD_INTERFACE, name, std::string{});
+        m_fst->setScope(fst::Hierarchy::ScopeType::VCD_INTERFACE, name, std::string{componentp});
         break;
     case VerilatedTracePrefixType::STRUCT_PACKED:
         m_fst->setAttrBegin(fst::Hierarchy::AttrType::PACK,

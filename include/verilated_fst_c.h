@@ -110,7 +110,8 @@ public:
     //=========================================================================
     // Internal interface to Verilator generated code
 
-    void pushPrefix(const char*, VerilatedTracePrefixType, int left = 0, int right = 0);
+    void pushPrefix(const char*, VerilatedTracePrefixType, int left = 0, int right = 0,
+                    const char* componentp = "");
     void popPrefix();
 
     // versions to call when the sig is not array member
@@ -151,6 +152,8 @@ public:
 // We use macros to drop unused arguments at compile time. This saves code size.
 #define VL_TRACE_PUSH_PREFIX(tracep, name, type, left, right) \
     tracep->pushPrefix(name, type, left, right);
+#define VL_TRACE_PUSH_PREFIX_COMPONENT(tracep, name, type, left, right, component) \
+    tracep->pushPrefix(name, type, left, right, component);
 #define VL_TRACE_POP_PREFIX(tracep) tracep->popPrefix();
 
 #define VL_TRACE_DECL_EVENT(tracep, code, fidx, name, dtypenum, dir, kind, type) \
